@@ -54,7 +54,7 @@ def get_tags_from_frontmatter(meta: dict) -> list[str]:
     tags = meta.get("tags", [])
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",")]
-    return tags if isinstance(tags, list) else []
+    return [str(tag) for tag in tags if tag is not None] if isinstance(tags, list) else []
 
 
 async def upsert_with_dedup(

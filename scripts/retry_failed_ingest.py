@@ -7,8 +7,9 @@ arquivos que falharam, reutilizando as funções do próprio bulk_wiki_ingest
 (payload idêntico) e usando ids determinísticos (uuid5 do caminho do arquivo),
 de modo que pode ser re-executado sem criar duplicatas.
 
-Uso: bash scripts/run-script.sh scripts/retry_failed_ingest.py
+Uso: bash scripts/run-script.sh scripts/retry_failed_ingest.py /path/to/failed-files.json
 """
+import argparse
 import asyncio
 import importlib.util
 import json
@@ -31,11 +32,11 @@ def carrega_modulo():
     return mod
 
 
-JSON_ALVO = REPO / "scripts" / "_retry_targets.json"
 
 
-async def main(mod):
-    alvos = json.loads(JSON_ALVO.read_text()) if JSON_ALVO.exists() else []
+
+async def main(mod, targets):
+    alvos = json.loads(targets.read_text())
     if not alvos:
         print("sem alvos")
         return
@@ -100,6 +101,9 @@ async def main(mod):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Retry an explicit JSON list of wiki file paths")
+    parser.add_argument("targets", type=Path)
+    args = parser.parse_args()
     mod = carrega_modulo()
-    asyncio.run(main(mod))
+    asyncio.run(main(mod, args.targets))
     sys.exit(0 if not FALHAS else 1)

@@ -20,7 +20,7 @@ import redis.asyncio as aioredis
 # ─── Config (profile-aware) ────────────────────────────────────────────────
 from hermes_env import hermes_home, wiki_state_file, wiki_failures_file
 
-ENV_PATH = Path.home() / "memory-os" / "docker" / ".env"
+ENV_PATH = Path(os.environ.get("MEMORY_OS_ENV", str(hermes_home() / ".env")))
 if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
 
@@ -29,16 +29,9 @@ STATE_FILE = wiki_state_file()
 FAILURES_FILE = wiki_failures_file()
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 
-# Fallback: read REDIS_PASSWORD from Docker .env if not in environment (cron context)
-if not REDIS_PASSWORD:
-    DOCKER_ENV = Path.home() / "memory-os" / "docker" / ".env"
-    if DOCKER_ENV.exists():
-        load_dotenv(DOCKER_ENV)
-        REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-
 redis_settings = RedisSettings(
-    host="127.0.0.1",
-    port=6379,
+    host=os.environ.get("REDIS_HOST", "127.0.0.1"),
+    port=int(os.environ.get("REDIS_PORT", "6379")),
     password=REDIS_PASSWORD or None,
 )
 
@@ -69,7 +62,7 @@ async def redis_ready() -> bool:
     """Verifica se Redis está acessível antes de enfileirar."""
     try:
         r = aioredis.Redis(
-            host="127.0.0.1", port=6379,
+            host=os.environ.get("REDIS_HOST", "127.0.0.1"), port=int(os.environ.get("REDIS_PORT", "6379")),
             password=REDIS_PASSWORD or None,
             socket_connect_timeout=3,
             socket_timeout=3,
@@ -135,12 +128,14 @@ async def main():
                 # monta a wiki em /wiki; na instalação nativa (sem Docker, este
                 # host) o worker valida o caminho contra WIKI_PATH e precisa do
                 # caminho real do sistema de arquivos.
-                file_path=str((WIKI_ROOT / rel_path).resolve()),
+                file_path=str(Path(os.environ.get("WORKER_WIKI_ROOT", "/wiki")) / rel_path),
             )
             if job is None:
                 raise RuntimeError("enqueue returned no job (duplicate id or queue rejected)")
             # Só marca sucesso depois do worker terminar. Enfileirar não prova ingestão.
-            await job.result(timeout=180)
+            result = await job.result(timeout=180)
+            if not isinstance(result, dict) or result.get("status") not in {"upserted", "dedup", "skipped"}:
+                raise RuntimeError("worker did not confirm successful ingestion")
             state[rel_path]["ingested_at"] = datetime.now(timezone.utc).isoformat()
             enqueued += 1
             print(f"  ✅ Ingerido: {rel_path} (job: {job.job_id[:8]})")

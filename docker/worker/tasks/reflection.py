@@ -30,7 +30,7 @@ You are a cognitive memory assistant. Analyze the provided memories and extract:
 Memories:
 {memories}
 
-Respond in JSON with keys: patterns, connections, insights, actions.
+Respond in JSON with keys: patterns, connections, insights, actions, each an array of strings.
 """
 
 
@@ -41,11 +41,9 @@ async def reflect_on_memories(qdrant: AsyncQdrantClient) -> dict:
     """
     # Fetch memories with low reflection_count or old
     filter_ref = Filter(
-        must=[
-            FieldCondition(
-                key="reflection_count",
-                range=Range(lt=3),
-            ),
+        should=[
+            FieldCondition(key="reflection_count", range=Range(lt=3)),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="reflection_count")),
         ]
     )
 
@@ -66,21 +64,21 @@ async def reflect_on_memories(qdrant: AsyncQdrantClient) -> dict:
 
     # Prepare batch of memories for LLM
     memories_text = "\n\n".join(
-        f"- [{p.id[:8]}] Source: {p.payload.get('source', '?')} | {p.payload.get('text', '')[:400]}"
+        f"- [{str(p.id)[:8]}] Source: {p.payload.get('source', '?')} | {p.payload.get('text', '')[:400]}"
         for p in points
     )
 
     prompt = REFLECTION_PROMPT.format(memories=memories_text)
 
-    try:
-        response = await ollama_chat(prompt)
-        reflection_data = json.loads(response)
-    except json.JSONDecodeError:
-        logger.warning("Reflection returned invalid JSON, saving raw")
-        reflection_data = {"raw": response}
-    except Exception as e:
-        logger.error(f"Reflection LLM error: {e}")
-        raise
+    reflection_data = None
+    for attempt in range(2):
+        response = await ollama_chat(prompt + (_JSON_REPAIR_INSTRUCTION if attempt else ""), json_mode=True)
+        reflection_data = _extract_object(response, _as_reflection)
+        if reflection_data is not None:
+            break
+    if reflection_data is None:
+        logger.warning("Reflection skipped: no valid structured response")
+        return {"status": "unanalyzed", "processed": 0}
 
     # ─── CREATE NEW INDEXABLE POINT with the insight ─────────────────────────
     # Text for embedding: concatenation of insights
@@ -199,52 +197,47 @@ def increment_budget(hour_window: str, tokens_used: int = 0):
 
 
 def _as_verdict(parsed) -> dict | None:
-    """Accept a verdict object, including a wrapper that echoes json_object schema."""
     if not isinstance(parsed, dict):
         return None
-    if "contradiction_found" in parsed:
-        return parsed
-    for value in parsed.values():
-        if isinstance(value, dict) and "contradiction_found" in value:
-            return value
+    if "contradiction_found" not in parsed:
+        return next((v for value in parsed.values() if (v := _as_verdict(value)) is not None), None)
+    if type(parsed["contradiction_found"]) is not bool:
+        return None
+    if parsed.get("severity") not in {"low", "medium", "high"}:
+        return None
+    if not isinstance(parsed.get("explanation"), str) or not parsed["explanation"].strip():
+        return None
+    return parsed
+
+
+def _extract_object(text, validate):
+    if not isinstance(text, str):
+        return None
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[i:])
+        except ValueError:
+            continue
+        result = validate(parsed)
+        if result is not None:
+            return result
     return None
 
 
 def _extract_json_object(text: str) -> dict | None:
-    """Best-effort extraction of a single JSON object from an LLM reply.
+    return _extract_object(text, _as_verdict)
 
-    Tolerates markdown fences and surrounding prose by scanning for balanced
-    ``{...}`` blocks. Returns None when nothing parses; the caller must treat
-    that as "not analysed", never as "consistent".
-    """
-    import json as _json
-    import re as _re
 
-    if not text:
+def _as_reflection(parsed):
+    keys = ("patterns", "connections", "insights", "actions")
+    if not isinstance(parsed, dict) or not all(
+        isinstance(parsed.get(k), list) and all(isinstance(x, str) for x in parsed[k]) for k in keys
+    ):
         return None
-    cleaned = _re.sub(r"```(?:json)?", "", text).strip()
-    candidates = [cleaned]
-    start = cleaned.find("{")
-    while start != -1:
-        depth = 0
-        for i in range(start, len(cleaned)):
-            if cleaned[i] == "{":
-                depth += 1
-            elif cleaned[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    candidates.append(cleaned[start : i + 1])
-                    break
-        start = cleaned.find("{", start + 1)
-    for candidate in candidates:
-        try:
-            parsed = _json.loads(candidate)
-        except (ValueError, TypeError):
-            continue
-        verdict = _as_verdict(parsed)
-        if verdict is not None:
-            return verdict
-    return None
+    return {k: parsed[k] for k in keys}
 
 
 _JSON_REPAIR_INSTRUCTION = (
@@ -272,7 +265,7 @@ async def _analyze_chunk(prompt: str) -> tuple[dict | None, int]:
                 logger.info("JSON parsed on repair attempt")
             return analysis, attempt
         logger.warning(
-            f"Attempt {attempt}: unparsable JSON ({len(response)} chars): {response[:120]!r}"
+            f"Attempt {attempt}: invalid reflection verdict"
         )
     return None, 0
 
@@ -293,11 +286,9 @@ async def _select_chunks(qdrant: AsyncQdrantClient, max_chunks: int) -> list:
     counts as not archived), then sort by rc, last_reflected, created_at.
     """
     filter_chunks = Filter(
-        must=[
-            FieldCondition(
-                key="reflection_count",
-                range=Range(lt=3),
-            ),
+        should=[
+            FieldCondition(key="reflection_count", range=Range(lt=3)),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="reflection_count")),
         ]
     )
     eligible = []
@@ -396,6 +387,7 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
                 qdrant_port = int(os.environ.get("QDRANT_PORT", "6333"))
                 resp = await client.post(
                     f"http://{qdrant_host}:{qdrant_port}/collections/{COLLECTION_NAME}/points/search",
+                    headers={"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {},
                     json={
                         "vector": {"name": "dense", "vector": vector},
                         "limit": 4,
@@ -413,7 +405,7 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
                     neighbor_texts.append(f"[{str(n['id'])[:8]}] {n['payload']['text'][:300]}")
             
             if len(neighbor_texts) < 2:
-                logger.info(f"Chunk {chunk_id[:8]} has too few neighbors, skipping")
+                logger.info(f"Chunk {str(chunk_id)[:8]} has too few neighbors, skipping")
                 continue
             
         except Exception as e:
@@ -433,7 +425,7 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
             # never collect the "consistent" confidence bonus, which inverted
             # the decay signal (19/30 chunks on 2026-09-19).
             unanalyzed += 1
-            logger.warning(f"Chunk {chunk_id[:8]} skipped: LLM produced no parsable JSON")
+            logger.warning(f"Chunk {str(chunk_id)[:8]} skipped: LLM produced no parsable JSON")
             continue
         if json_attempt == 1:
             json_ok_first += 1
@@ -452,7 +444,7 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
             new_confidence = max(0.0, current_confidence - severity_mult)
             contradictions += 1
             reflection_note = f"[CONTRADICTION {severity.upper()}] {explanation}"
-        elif prev_notes.startswith("[CONTRADICTION"):
+        elif point.payload.get("contradiction_unresolved") or prev_notes.startswith(("[CONTRADICTION", "[CONSISTENT frozen]")):
             new_confidence = current_confidence
             consistencies += 1
             frozen += 1
@@ -473,11 +465,12 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
                     "reflection_count": new_count,
                     "last_reflected": now.isoformat(),
                     "reflection_notes": reflection_note,
+                    "contradiction_unresolved": bool(contradiction_found or point.payload.get("contradiction_unresolved") or prev_notes.startswith(("[CONTRADICTION", "[CONSISTENT frozen]"))),
                 },
                 points=[chunk_id],
             )
             processed += 1
-            logger.info(f"Micro-reflection {chunk_id[:8]}: {reflection_note[:80]}")
+            logger.info(f"Micro-reflection {str(chunk_id)[:8]}: {reflection_note[:80]}")
         except Exception as e:
             logger.warning(f"Error updating chunk {chunk_id}: {e}")
     

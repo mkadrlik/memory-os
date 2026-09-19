@@ -4,6 +4,7 @@ via EMBEDDING_API_BASE and EMBEDDING_MODEL for local Ollama/vLLM/llama.cpp.
 Mandatory dimension validation with in-memory LRU cache.
 """
 import os
+from urllib.parse import urlsplit
 import logging
 from collections import OrderedDict
 
@@ -38,7 +39,7 @@ async def get_embedding(text: str) -> list[float]:
         return _embedding_cache[text]
     headers = {"Content-Type": "application/json"}
 
-    if "openrouter" in EMBEDDING_API_BASE.lower():
+    if urlsplit(EMBEDDING_API_BASE).hostname == "openrouter.ai":
         if not OPENROUTER_API_KEY:
             raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter")
         headers["Authorization"] = f"Bearer {OPENROUTER_API_KEY}"

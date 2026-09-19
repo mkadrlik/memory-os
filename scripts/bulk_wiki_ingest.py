@@ -27,8 +27,8 @@ except ImportError:
 
 # ─── Config ────────────────────────────────────────────────────────────────
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
-QDRANT_URL = "http://localhost:6333"
-COLLECTION = "knowledge_base"
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+COLLECTION = os.environ.get("COLLECTION_NAME", "knowledge_base")
 WIKI_ROOT = Path(os.environ.get("WIKI_ROOT", str(Path.home() / "vault" / "wiki")))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
 EMBEDDING_DIMS = 4096

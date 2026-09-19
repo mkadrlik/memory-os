@@ -31,7 +31,7 @@ import redis.asyncio as aioredis
 from hermes_env import hermes_home, reflection_log
 
 # ─── Config ────────────────────────────────────────────────────────────────
-ENV_PATH = Path.home() / "ai-stack" / "cognitive-agent" / ".env"
+ENV_PATH = Path(os.environ.get("MEMORY_OS_ENV", str(hermes_home() / ".env")))
 if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
 
@@ -95,7 +95,8 @@ async def is_idle() -> bool:
                 elif qtype == "list":
                     total_pending += int(await r.llen(qn) or 0)
             except Exception:
-                pass
+                await r.aclose()
+                return False
 
         total_in_progress = 0
         async for _key in r.scan_iter(match=f"{in_progress_key_prefix}*"):

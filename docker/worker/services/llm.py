@@ -1,8 +1,7 @@
 """
 LLM client for Memory OS worker tasks (reflection).
 
-Native installs have no local Ollama. Prefer OpenRouter when LLM_BACKEND=openrouter
-or when the historical Docker default host is still in OLLAMA_BASE_URL.
+Select LLM_BACKEND explicitly for OpenRouter; Ollama remains the historical default.
 """
 import os
 import logging
@@ -26,11 +25,11 @@ def get_auth_header() -> dict:
 
 
 def _use_openrouter() -> bool:
-    if not OPENROUTER_API_KEY:
-        return False
-    if LLM_BACKEND in {"openrouter", "openai"}:
-        return True
-    if "host.docker.internal" in (OLLAMA_BASE_URL or ""):
+    if LLM_BACKEND not in {"", "ollama", "openrouter"}:
+        raise ValueError("LLM_BACKEND must be ollama or openrouter")
+    if LLM_BACKEND == "openrouter":
+        if not OPENROUTER_API_KEY:
+            raise ValueError("OpenRouter backend requires OPENROUTER_API_KEY")
         return True
     return False
 
@@ -80,7 +79,7 @@ async def ollama_chat(
     timeout: int = 120,
     json_mode: bool = False,
 ) -> str:
-    """Return LLM text for reflection. OpenRouter on this host; Ollama otherwise.
+    """Return LLM text for reflection from the explicitly configured backend.
 
     ``json_mode`` is honoured on both paths: response_format on OpenRouter,
     format="json" on Ollama.
@@ -107,9 +106,12 @@ async def ollama_chat(
         payload["format"] = "json"
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 400 and json_mode:
+            payload.pop("format", None)
+            resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
     response = data.get("response", "")
-    if not response and "reasoning" in data:
-        response = data["reasoning"]
+    if not response:
+        response = data.get("reasoning") or data.get("thinking") or ""
     return response
