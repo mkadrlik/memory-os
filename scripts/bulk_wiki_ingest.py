@@ -42,7 +42,7 @@ if not OPENROUTER_KEY:
 
 print(f"📁 Wiki root: {WIKI_ROOT}")
 print(f"🎯 Coleção: {COLLECTION}")
-print(f"🔑 OpenRouter: {OPENROUTER_KEY[:20]}...")
+print("🔑 OpenRouter: configured")
 
 # ─── Encontrar todos os .md ────────────────────────────────────────────────
 md_files = sorted(WIKI_ROOT.rglob("*.md"))

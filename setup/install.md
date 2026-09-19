@@ -16,10 +16,17 @@
 
 ### 1. Icarus Plugin (bundled)
 
+On this Omarchy host the Principal plugin is a **symlink** into the repo, so edits here are what Hermes loads:
+
 ```bash
-# Copy the bundled Icarus fork into the Hermes plugins directory
-cp -r icarus/ ~/.hermes/plugins/icarus/
+ln -sfn "$(pwd)/icarus" ~/.hermes/plugins/icarus
 ```
+
+A plain copy (`cp -r icarus/ ~/.hermes/plugins/icarus/`) is the portable install; it will **not** see later repo edits until recopied.
+
+After `hermes update`, re-apply `modifications/session_search_tool.py.diff` so `session_search(profile=...)` stays fail-closed (does not fall back to the default profile's `state.db`).
+
+Native Redis (`redis-conf/redis.conf`, gitignored because it holds `requirepass`) must use `maxmemory-policy noeviction` so ARQ keys are not LRU-evicted. `worker.env` is also gitignored; copy `worker.env.example`.
 
 ### 2. Database Setup
 

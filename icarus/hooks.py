@@ -12,6 +12,24 @@ from pathlib import Path
 from . import state
 from . import collapse as _collapse
 
+# ── Memory OS host-scripts import path ──────────────────────────────────────
+# ``_search_qdrant`` below uses ``from scripts.context_enhancer import ...``.
+# That import needs the Memory OS repository root on sys.path. When Hermes
+# loads this plugin the root is NOT added automatically, the import raises
+# ModuleNotFoundError, and the failure is swallowed by the fail-open handler —
+# so no [qdrant] block is ever injected. Set MEMORY_OS_ROOT to override; the
+# default derivation works when hooks.py sits inside the repository
+# (<root>/icarus/hooks.py) and is skipped otherwise.
+import sys as _sys
+
+_MEMORY_OS_ROOT = os.environ.get("MEMORY_OS_ROOT", "").strip()
+if not _MEMORY_OS_ROOT:
+    _candidate = Path(__file__).resolve().parent.parent
+    if (_candidate / "scripts" / "context_enhancer.py").exists():
+        _MEMORY_OS_ROOT = str(_candidate)
+if _MEMORY_OS_ROOT and _MEMORY_OS_ROOT not in _sys.path:
+    _sys.path.insert(0, _MEMORY_OS_ROOT)
+
 # ── LLM extraction key ──
 _OPENROUTER_KEY = (
     os.environ.get("OPENROUTER_FULL_API_KEY", "")
@@ -179,6 +197,7 @@ def on_session_start(session_id="", platform="", **kwargs):
     _injected_sessions.clear()
     state.session_id = session_id
     state.exchanges = []
+    state.pending_events = []
     state._recall_log = []
 
     creative = state.load_creative()
@@ -295,7 +314,8 @@ def _search_qdrant(query, top_k=2, threshold=0.72):
             score_threshold=threshold,
         )
         return results
-    except Exception:
+    except Exception as e:
+        logger.warning("icarus: qdrant recall failed — %s", e, exc_info=True)
         return []
     finally:
         # Restore original env state — never leave a mutation behind.
@@ -369,7 +389,8 @@ def _search_sessions(query, current_session_id="", top_k=2):
             (fts_query, current_session_id),
         ).fetchall()
         con.close()
-    except Exception:
+    except Exception as e:
+        logger.warning("icarus: session recall failed — %s", e, exc_info=True)
         return []
 
     out = []
@@ -434,7 +455,8 @@ def _search_facts(query, top_k=3):
             (fts_query, top_k),
         ).fetchall()
         con.close()
-    except Exception:
+    except Exception as e:
+        logger.warning("icarus: fact recall failed — %s", e, exc_info=True)
         return []
 
     return [r["content"][:200] for r in rows if r["content"]]
@@ -734,6 +756,15 @@ def pre_llm_call(session_id="", user_message="", is_first_turn=False, **kwargs):
     if is_first_turn and not is_social:
         fact_results = _search_facts(user_message, top_k=3)
 
+    logger.info(
+        "ICARUS_RECALL: fabric=%d qdrant=%d sessions=%d facts=%d",
+        len(results), len(qdrant_results),
+        len(session_results), len(fact_results),
+    )
+    q_levels = sorted({str(r.get("fallback_level") or "") for r in qdrant_results if r.get("fallback_level")})
+    if q_levels:
+        logger.info("ICARUS_RECALL_QDRANT_LEVEL: %s", ",".join(q_levels))
+
     # ── Bail if nothing from any source ──
     if not results and not qdrant_results and not session_results and not fact_results:
         return None
@@ -770,7 +801,11 @@ def pre_llm_call(session_id="", user_message="", is_first_turn=False, **kwargs):
 
     # Qdrant context (dedup against previously injected point ids)
     if qdrant_results:
-        lines = ["[qdrant] knowledge base:"]
+        level = next((r.get("fallback_level") for r in qdrant_results if r.get("fallback_level")), "")
+        qlabel = "[qdrant] knowledge base:"
+        if level and level not in ("hybrid", "dense-only"):
+            qlabel = f"[qdrant-{level}] knowledge base:"
+        lines = [qlabel]
         emitted = 0
         for r in qdrant_results:
             rid = str(r.get("id", "")) or str(r.get("content_preview", ""))[:40]
@@ -829,11 +864,9 @@ def post_llm_call(session_id="", user_message="", assistant_response="", platfor
         "assistant": assistant_response[:500],
     })
 
-    agent = state.AGENT_NAME or "agent"
     plat = platform or "cli"
 
-    # capture decisions: requires decision + outcome in response, AND a substantial
-    # user request (>50 chars) to ground the claim
+    # Detector only: never write to disk here. Persistence is on_session_end.
     user_text = (user_message or "").strip()
     if (state.DECISION_RE.search(assistant_response)
             and state.OUTCOME_RE.search(assistant_response)
@@ -842,8 +875,14 @@ def post_llm_call(session_id="", user_message="", assistant_response="", platfor
         body = f"Task: {user_text[:_TASK_MAX]}\n\nResult: {assistant_response[:_RESULT_MAX]}"
         summary = assistant_response[:80].replace("\n", " ")
         entry_status = "completed" if state.COMPLETION_RE.search(assistant_response) else ""
-        state.write_entry("decision", body, summary,
-                         platform=plat, status=entry_status, training_value="high")
+        state.pending_events.append({
+            "type": "decision",
+            "content": body,
+            "summary": summary,
+            "platform": plat,
+            "status": entry_status,
+            "training_value": "high",
+        })
 
     # creative tracking (uses broader _THEME_RE, doesn't write entries)
     creative = state.load_creative()
@@ -1079,36 +1118,82 @@ def _legacy_session_write(platform, scores):
                      training_value=tv, status="completed")
 
 
+def _summary_tokens(text):
+    return {t for t in re.findall(r"[a-z0-9]{4,}", (text or "").lower())}
+
+
+def _consolidate_candidates(pending, llm_entries, platform):
+    """Single writer: LLM extracts win; regex candidates fill gaps only."""
+    out = []
+    seen = []
+    for entry in llm_entries or []:
+        item = {
+            "type": entry.get("type") or "note",
+            "content": entry.get("content") or "",
+            "summary": entry.get("summary") or "",
+            "platform": platform,
+            "training_value": entry.get("training_value", "normal"),
+            "status": "completed",
+        }
+        out.append(item)
+        seen.append((_summary_tokens(item["summary"]), item["type"]))
+    for cand in pending or []:
+        tokens = _summary_tokens(cand.get("summary"))
+        ctype = cand.get("type") or "decision"
+        duplicate = False
+        for stok, stype in seen:
+            if stype != ctype or not tokens or not stok:
+                continue
+            overlap = len(tokens & stok) / max(len(tokens | stok), 1)
+            if overlap >= 0.5:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        out.append({
+            "type": ctype,
+            "content": cand.get("content") or "",
+            "summary": cand.get("summary") or "",
+            "platform": cand.get("platform") or platform,
+            "training_value": cand.get("training_value", "high"),
+            "status": cand.get("status") or "completed",
+        })
+        seen.append((tokens, ctype))
+    return out
+
+
 def on_session_end(session_id="", platform="", completed=False, **kwargs):
-    """Score session, extract entries via LLM, fall back to legacy truncation."""
+    """Score session, consolidate detectors, persist once."""
     creative = state.load_creative()
     state.write_memory_file(creative)
 
     if not state.exchanges:
+        state.pending_events = []
         return
 
     scores = state.score_session()
     if scores["total"] < 0.2:
+        state.pending_events = []
         return
 
     plat = platform or "cli"
-
-    # ── LLM extraction (primary) ──
     transcript = _build_transcript(state.exchanges)
-    entries = _llm_extract_entries(transcript)
+    llm_entries = _llm_extract_entries(transcript)
+    to_write = _consolidate_candidates(state.pending_events, llm_entries, plat)
+    state.pending_events = []
 
-    if entries:
-        for entry in entries:
+    if to_write:
+        for entry in to_write:
             state.write_entry(
                 entry["type"],
                 entry["content"],
                 entry["summary"],
-                platform=plat,
+                platform=entry.get("platform") or plat,
                 training_value=entry.get("training_value", "normal"),
-                status="completed"
+                status=entry.get("status") or "completed",
             )
-        logger.info("icarus: LLM extracted %d entries from session", len(entries))
+        logger.info("icarus: persisted %d fabric entries (llm=%d pending-merged)",
+                    len(to_write), len(llm_entries or []))
     else:
-        # ── Legacy fallback ──
         logger.info("icarus: LLM extraction produced nothing — using legacy truncation")
         _legacy_session_write(platform, scores)

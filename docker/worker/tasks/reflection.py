@@ -198,6 +198,142 @@ def increment_budget(hour_window: str, tokens_used: int = 0):
         logger.warning(f"Error incrementing budget: {e}")
 
 
+def _as_verdict(parsed) -> dict | None:
+    """Accept a verdict object, including a wrapper that echoes json_object schema."""
+    if not isinstance(parsed, dict):
+        return None
+    if "contradiction_found" in parsed:
+        return parsed
+    for value in parsed.values():
+        if isinstance(value, dict) and "contradiction_found" in value:
+            return value
+    return None
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Best-effort extraction of a single JSON object from an LLM reply.
+
+    Tolerates markdown fences and surrounding prose by scanning for balanced
+    ``{...}`` blocks. Returns None when nothing parses; the caller must treat
+    that as "not analysed", never as "consistent".
+    """
+    import json as _json
+    import re as _re
+
+    if not text:
+        return None
+    cleaned = _re.sub(r"```(?:json)?", "", text).strip()
+    candidates = [cleaned]
+    start = cleaned.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "{":
+                depth += 1
+            elif cleaned[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(cleaned[start : i + 1])
+                    break
+        start = cleaned.find("{", start + 1)
+    for candidate in candidates:
+        try:
+            parsed = _json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        verdict = _as_verdict(parsed)
+        if verdict is not None:
+            return verdict
+    return None
+
+
+_JSON_REPAIR_INSTRUCTION = (
+    "\n\nSTRICT: your previous reply was not a parsable JSON object. "
+    "Reply with ONLY the JSON object, no prose, no markdown fences."
+)
+
+
+async def _analyze_chunk(prompt: str) -> tuple[dict | None, int]:
+    """Ask the LLM to classify a chunk. Two attempts, then give up cleanly.
+
+    Returns ``(verdict, attempt)``. attempt is 1 (first JSON), 2 (repair), or 0
+    (no verdict). Returning None is a first-class outcome: the caller skips
+    the chunk instead of recording a fake verdict and mutating confidence_score.
+    """
+    for attempt, text in enumerate((prompt, prompt + _JSON_REPAIR_INSTRUCTION), start=1):
+        try:
+            response = await ollama_chat(text, json_mode=True)
+        except Exception as e:
+            logger.warning(f"LLM error (attempt {attempt}): {e}")
+            continue
+        analysis = _extract_json_object(response)
+        if analysis is not None:
+            if attempt > 1:
+                logger.info("JSON parsed on repair attempt")
+            return analysis, attempt
+        logger.warning(
+            f"Attempt {attempt}: unparsable JSON ({len(response)} chars): {response[:120]!r}"
+        )
+    return None, 0
+
+
+def _chunk_sort_key(point) -> tuple:
+    payload = point.payload or {}
+    rc = int(payload.get("reflection_count") or 0)
+    last = str(payload.get("last_reflected") or "")
+    created = str(payload.get("created_at") or "")
+    return (rc, bool(last), last, created)
+
+
+async def _select_chunks(qdrant: AsyncQdrantClient, max_chunks: int) -> list:
+    """Prefer never-reflected chunks; do not ruminate the collection head.
+
+    Qdrant 1.17 scroll has no reliable created_at DESC here. Page with a
+    reflection_count < 3 filter, drop archived=True in Python (missing field
+    counts as not archived), then sort by rc, last_reflected, created_at.
+    """
+    filter_chunks = Filter(
+        must=[
+            FieldCondition(
+                key="reflection_count",
+                range=Range(lt=3),
+            ),
+        ]
+    )
+    eligible = []
+    offset = None
+    while True:
+        points, offset = await qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=filter_chunks,
+            limit=256,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            break
+        for point in points:
+            if (point.payload or {}).get("archived") is True:
+                continue
+            eligible.append(point)
+        if offset is None:
+            break
+    eligible.sort(key=_chunk_sort_key)
+    chosen = eligible[:max_chunks]
+    n_new = sum(
+        1 for p in chosen if int((p.payload or {}).get("reflection_count") or 0) == 0
+    )
+    logger.info(
+        "Micro-reflection select: eligible=%d chosen=%d rc0=%d ids=%s",
+        len(eligible),
+        len(chosen),
+        n_new,
+        ",".join(str(p.id)[:8] for p in chosen),
+    )
+    return chosen
+
+
 async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
     """
     Micro-reflection: consolidates freshly ingested chunks using LLM.
@@ -216,30 +352,8 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
     
     # ── Select chunks ─────────────────────────────────────────────────────
     max_chunks = int(os.environ.get("MICRO_REFLECTION_MAX_CHUNKS", "10"))
-    
-    filter_chunks = Filter(
-        must=[
-            FieldCondition(
-                key="reflection_count",
-                range=Range(lt=3),
-            ),
-            FieldCondition(
-                key="archived",
-                match=qmodels.MatchValue(value=False),
-            ),
-        ]
-    )
-    
     try:
-        # Order by created_at DESC via scroll (Qdrant has no direct sort; use scroll with limit)
-        results = await qdrant.scroll(
-            collection_name=COLLECTION_NAME,
-            scroll_filter=filter_chunks,
-            limit=max_chunks,
-            with_payload=True,
-            with_vectors=False,
-        )
-        points = results[0]
+        points = await _select_chunks(qdrant, max_chunks)
     except Exception as e:
         logger.warning(f"Error fetching chunks for reflection: {e}")
         return {"status": "error", "error": str(e)}
@@ -251,6 +365,10 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
     processed = 0
     contradictions = 0
     consistencies = 0
+    unanalyzed = 0
+    frozen = 0
+    json_ok_first = 0
+    json_ok_repair = 0
     
     for point in points:
         chunk_text = point.payload.get("text", "")
@@ -309,25 +427,22 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
             neighbors_text=neighbors_text,
         )
         
-        try:
-            response = await ollama_chat(prompt)
-            # Extract JSON from response
-            import re
-            json_match = re.search(r'\{[^}]*\}', response)
-            if json_match:
-                analysis = json.loads(json_match.group())
-            else:
-                # Try to parse the whole response
-                analysis = json.loads(response.strip())
-        except json.JSONDecodeError:
-            logger.warning(f"LLM response is not valid JSON for chunk {chunk_id[:8]}: {response[:100]}")
-            analysis = {"contradiction_found": False, "severity": "low", "explanation": "Could not analyze"}
-        except Exception as e:
-            logger.warning(f"LLM error for chunk {chunk_id[:8]}: {e}")
+        analysis, json_attempt = await _analyze_chunk(prompt)
+        if analysis is None:
+            # No verdict means no payload mutation: an un-analysed chunk must
+            # never collect the "consistent" confidence bonus, which inverted
+            # the decay signal (19/30 chunks on 2026-09-19).
+            unanalyzed += 1
+            logger.warning(f"Chunk {chunk_id[:8]} skipped: LLM produced no parsable JSON")
             continue
+        if json_attempt == 1:
+            json_ok_first += 1
+        elif json_attempt == 2:
+            json_ok_repair += 1
         
         # Apply result
         current_confidence = point.payload.get("confidence_score", 1.0)
+        prev_notes = str(point.payload.get("reflection_notes") or "")
         contradiction_found = analysis.get("contradiction_found", False)
         severity = analysis.get("severity", "low")
         explanation = analysis.get("explanation", "")
@@ -337,6 +452,12 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
             new_confidence = max(0.0, current_confidence - severity_mult)
             contradictions += 1
             reflection_note = f"[CONTRADICTION {severity.upper()}] {explanation}"
+        elif prev_notes.startswith("[CONTRADICTION"):
+            new_confidence = current_confidence
+            consistencies += 1
+            frozen += 1
+            reflection_note = f"[CONSISTENT frozen] {explanation}"
+            logger.info("confidence frozen for %s (prior contradiction)", str(chunk_id)[:8])
         else:
             new_confidence = min(1.0, current_confidence + 0.05)
             consistencies += 1
@@ -363,13 +484,27 @@ async def micro_reflection(qdrant: AsyncQdrantClient) -> dict:
     # Increment budget
     increment_budget(hour_window, tokens_used=0)
     
-    logger.info(f"Micro-reflection completed: {processed} chunks, {contradictions} contradictions, {consistencies} consistent")
+    logger.info(
+        f"Micro-reflection completed: {processed} chunks written, "
+        f"{contradictions} contradictions, {consistencies} consistent, "
+        f"{frozen} frozen, {unanalyzed} skipped (no parsable JSON), "
+        f"json_ok_first={json_ok_first} json_ok_repair={json_ok_repair}"
+    )
+    if unanalyzed:
+        logger.warning(
+            f"INSTRUMENTATION: {unanalyzed} of {unanalyzed + processed} sampled chunks got no LLM "
+            "verdict; the consistency counts above exclude them"
+        )
     
     return {
         "status": "completed",
         "processed": processed,
         "contradictions": contradictions,
         "consistencies": consistencies,
+        "frozen": frozen,
+        "unanalyzed": unanalyzed,
+        "json_ok_first": json_ok_first,
+        "json_ok_repair": json_ok_repair,
         "budget_hour": hour_window,
         "budget_used": current_count + 1,
     }

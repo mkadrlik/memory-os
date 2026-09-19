@@ -62,7 +62,17 @@ def log_message(msg: str):
 
 
 async def is_idle() -> bool:
-    """Verifica se não há jobs pendentes nem em execução no ARQ."""
+    """Verifica se não há jobs pendentes nem em execução no ARQ 0.28+.
+
+    A fila padrão é o sorted set ``arq:queue`` (ZCARD), não uma list.
+    Jobs em execução são strings ``arq:in-progress:<job_id>``, não sets.
+    """
+    try:
+        from arq.constants import default_queue_name, in_progress_key_prefix
+    except Exception:
+        default_queue_name = "arq:queue"
+        in_progress_key_prefix = "arq:in-progress:"
+
     try:
         r = aioredis.Redis(
             host=REDIS_HOST, port=REDIS_PORT,
@@ -70,31 +80,26 @@ async def is_idle() -> bool:
             decode_responses=True,
         )
 
-        # ARQ armazena jobs em filas tipo 'arq:queue:default'
-        queue_names = ["arq:queue:default"]
-        qr_prefix = os.environ.get("ARQ_QUEUE_PREFIX", "arq:queue:")
-        if qr_prefix:
-            try:
-                found = await r.keys(f"{qr_prefix}*")
-                queue_names = list(found) if found else queue_names
-            except Exception:
-                pass
-
         total_pending = 0
+        queue_names = {default_queue_name, "arq:queue"}
+        async for key in r.scan_iter(match="arq:queue*"):
+            if key.endswith(":health-check"):
+                continue
+            queue_names.add(key)
+
         for qn in queue_names:
             try:
-                total_pending += await r.llen(qn)
+                qtype = await r.type(qn)
+                if qtype == "zset":
+                    total_pending += int(await r.zcard(qn) or 0)
+                elif qtype == "list":
+                    total_pending += int(await r.llen(qn) or 0)
             except Exception:
                 pass
 
-        # Jobs em execução: ARQ usa sets tipo 'arq:in-progress:...'
-        in_progress_keys = await r.keys("arq:in-progress:*")
         total_in_progress = 0
-        for key in in_progress_keys:
-            try:
-                total_in_progress += await r.scard(key)
-            except Exception:
-                pass
+        async for _key in r.scan_iter(match=f"{in_progress_key_prefix}*"):
+            total_in_progress += 1
 
         await r.aclose()
         return (total_pending + total_in_progress) == 0

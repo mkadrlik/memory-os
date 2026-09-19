@@ -108,6 +108,9 @@ async def main():
             state[rel]["mtime"] = mtime
             state[rel]["hash"] = current_hash
             state[rel]["ingested_at"] = None
+        elif not state[rel].get("ingested_at"):
+            # Hash igual, mas a ingestão anterior não foi confirmada pelo worker.
+            modified_files.append(rel)
         else:
             skipped += 1
 
@@ -128,11 +131,19 @@ async def main():
         try:
             job = await redis.enqueue_job(
                 "process_wiki_file",
-                file_path=f"/wiki/{rel_path}",  # path dentro do container
+                # Caminho do arquivo para o worker. No stack Docker o worker
+                # monta a wiki em /wiki; na instalação nativa (sem Docker, este
+                # host) o worker valida o caminho contra WIKI_PATH e precisa do
+                # caminho real do sistema de arquivos.
+                file_path=str((WIKI_ROOT / rel_path).resolve()),
             )
+            if job is None:
+                raise RuntimeError("enqueue returned no job (duplicate id or queue rejected)")
+            # Só marca sucesso depois do worker terminar. Enfileirar não prova ingestão.
+            await job.result(timeout=180)
             state[rel_path]["ingested_at"] = datetime.now(timezone.utc).isoformat()
             enqueued += 1
-            print(f"  ✅ Enfileirado: {rel_path} (job: {job.job_id[:8]})")
+            print(f"  ✅ Ingerido: {rel_path} (job: {job.job_id[:8]})")
         except Exception as e:
             failed += 1
             error_msg = str(e)

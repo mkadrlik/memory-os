@@ -44,6 +44,9 @@ COLLECTION = os.environ.get("QDRANT_COLLECTION", "knowledge_base")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
 TOP_K_DEFAULT = 3
 SCORE_THRESHOLD_DEFAULT = 0.55
+# RRF fusion scores are ranks, not cosine similarities. Never apply the cosine
+# threshold to hybrid/RRF hits — that discarded every real result (0.25–0.50)
+# and fell through to lexical search labeled as [qdrant].
 MAX_TEXT_LEN = 8000
 REQUEST_TIMEOUT = 10
 
@@ -431,6 +434,30 @@ def sqlite_keyword_search(
 
 # ─── Fallback Wrapper ──────────────────────────────────────────────────────
 
+def _points_to_results(data, score_threshold, apply_threshold, top_k, fallback_level):
+    """Parse a Qdrant query/search JSON body into result dicts."""
+    raw_results = data.get("result", {})
+    points = raw_results if isinstance(raw_results, list) else raw_results.get("points", [])
+    results = []
+    for r in points:
+        score = r.get("score", 0)
+        if apply_threshold and score < score_threshold:
+            continue
+        payload = r.get("payload", {}) or {}
+        results.append({
+            "id": r.get("id", "unknown"),
+            "score": score,
+            "title": payload.get("title", "Untitled"),
+            "content_preview": _strip_prompt_injection((payload.get("text", "") or "")[:400]),
+            "source": payload.get("source", "unknown"),
+            "tags": payload.get("tags", []),
+            "fallback_level": fallback_level,
+        })
+        if len(results) >= top_k:
+            break
+    return results
+
+
 def search_with_fallback(
     dense_vector: Optional[List[float]] = None,
     sparse_vector: Optional[Tuple[List[int], List[float]]] = None,
@@ -488,22 +515,38 @@ def search_with_fallback(
         resp.raise_for_status()
         qdrant_latency_ms = (time.perf_counter() - t_q0) * 1000
         data = resp.json()
-        results = []
-        raw_results = data.get("result", {})
-        points = raw_results if isinstance(raw_results, list) else raw_results.get("points", [])
-        for r in points:
-            score = r.get("score", 0)
-            if score < score_threshold:
-                continue
-            payload = r.get("payload", {})
-            results.append({
-                "id": r.get("id", "unknown"),
-                "score": score,
-                "title": payload.get("title", "Untitled"),
-                "content_preview": _strip_prompt_injection((payload.get("text", "") or "")[:400]),
-                "source": payload.get("source", "unknown"),
-                "tags": payload.get("tags", [])
-            })
+        # Hybrid uses RRF ranks; cosine threshold only applies to dense-only.
+        results = _points_to_results(
+            data,
+            score_threshold=score_threshold,
+            apply_threshold=(sparse_vector is None),
+            top_k=top_k,
+            fallback_level=fallback_level,
+        )
+
+        if not results and sparse_vector is not None and dense_vector is not None:
+            t_q2 = time.perf_counter()
+            resp = requests.post(
+                f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "query": dense_vector,
+                    "using": "dense",
+                    "limit": top_k,
+                    "with_payload": True,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            qdrant_latency_ms = (time.perf_counter() - t_q2) * 1000
+            results = _points_to_results(
+                resp.json(),
+                score_threshold=score_threshold,
+                apply_threshold=True,
+                top_k=top_k,
+                fallback_level="dense-only",
+            )
+            fallback_level = "dense-only"
 
         if results:
             fallback_latency_ms = (time.perf_counter() - t0) * 1000

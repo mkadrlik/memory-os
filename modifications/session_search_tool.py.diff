@@ -1,0 +1,17 @@
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -691,10 +691,15 @@ def session_search(
+         result = _read_session(db, sid)
+         if json.loads(result).get("success"):
+             return result
+ 
+-        # Miss in the target profile — the model may have dropped the owning
++        # Explicit profile= is fail-closed: do not silently return another
++        # profile's session (observed 2026-09-19: profile=lucidus hit default).
++        if profile is not None and str(profile).strip():
++            return result
++
++        # Miss with no profile — the model may have dropped the owning
+         # profile from the link. Scan every profile and read it from wherever
+         # it lives, tagging the profile it was found in.
+         located, owner = _locate_session_db(sid)

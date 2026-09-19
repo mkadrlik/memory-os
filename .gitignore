@@ -7,10 +7,19 @@ __pycache__/
 # Environment
 .env
 .env.local
+worker.env
 
 # Docker
 docker/qdrant_data/
 docker/redis_data/
+
+# Native install (binaries + live state — never commit)
+bin/
+qdrant-storage/
+redis/
+redis-data/
+redis-conf/
+.qdrant-initialized
 
 # IDEs
 .vscode/

@@ -65,18 +65,22 @@ FABRIC_DIR = Path(
 
 # ── Shared regexes (used by hooks.py and scoring) ────────
 DECISION_RE = re.compile(
-    r"(?i)\b(decided|resolved|completed|fixed|deployed|shipped|reviewed|approved|rejected)\b"
+    r"(?i)\b(decided|resolved|completed|fixed|deployed|shipped|reviewed|approved|rejected|"
+    r"decidiu|resolvido|conclu[ií]do|corrigido|aprovado|rejeitado)\b"
 )
 OUTCOME_RE = re.compile(
-    r"(?i)(result:|outcome:|conclusion:|because|root cause|instead of|\d+%|\d+x)"
+    r"(?i)(result:|outcome:|conclusion:|because|root cause|instead of|"
+    r"resultado:|conclus[aã]o:|porque|causa raiz|\d+%|\d+x)"
 )
 COMPLETION_RE = re.compile(
-    r"(?i)\b(completed|finished|done|shipped|deployed|resolved|closed|merged|fixed)\b"
+    r"(?i)\b(completed|finished|done|shipped|deployed|resolved|closed|merged|fixed|"
+    r"conclu[ií]do|pronto|corrigido)\b"
 )
 
 # ── Session state ────────────────────────────────────────
 session_id = ""
 exchanges: list = []
+pending_events: list = []
 
 # ── Training job tracking ────────────────────────────────
 _JOB_FILE = hermes_home() / ".icarus-training-job.txt"
@@ -342,10 +346,46 @@ def _parse_frontmatter_scalar(text, key):
         return ", ".join(str(v) for v in value)
     return str(value)
 
+def _token_set(text):
+    return {t for t in re.findall(r"[a-z0-9áéíóúãõç]{4,}", (text or "").lower())}
+
+
+def _find_duplicate(entry_type, summary, threshold=0.92):
+    """Return (id, path) of an existing fabric entry if summary overlap is high."""
+    if not FABRIC_DIR.exists() or not summary:
+        return None
+    incoming = _token_set(summary)
+    if len(incoming) < 4:
+        return None
+    for path in FABRIC_DIR.glob("*.md"):
+        try:
+            head = path.read_text("utf-8")[:2000]
+        except Exception:
+            continue
+        if f"type: {entry_type}" not in head and f'type: "{entry_type}"' not in head:
+            continue
+        id_m = re.search(r'(?m)^id:\s*["\']?([^\s"\']+)', head)
+        sum_m = re.search(r'(?m)^summary:\s*["\']?(.*)$', head)
+        if not id_m or not sum_m:
+            continue
+        other = _token_set(sum_m.group(1).strip().strip('"').strip("'"))
+        if not other:
+            continue
+        overlap = len(incoming & other) / max(len(incoming | other), 1)
+        if overlap >= threshold:
+            return id_m.group(1), path
+    return None
+
+
+def _find_duplicate_id(entry_type, summary, threshold=0.92):
+    found = _find_duplicate(entry_type, summary, threshold)
+    return found[0] if found else None
+
+
 def write_entry(entry_type, content, summary, tier="hot", tags="", platform="cli",
                 status="", outcome="", review_of="", revises="", customer_id="",
                 assigned_to="", training_value="", verified="", evidence="",
-                source_tool="", artifact_paths=""):
+                source_tool="", artifact_paths="", duplicate_of=""):
     """Write a fabric entry with full schema v1 fields. Returns the filepath."""
     FABRIC_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
@@ -383,6 +423,16 @@ def write_entry(entry_type, content, summary, tier="hot", tags="", platform="cli
         f"project_id: {_yaml_scalar(project_id)}",
         f"session_id: {_yaml_scalar(sid)}",
     ]
+    found = None
+    if not duplicate_of:
+        found = _find_duplicate(entry_type, summary)
+        duplicate_of = (found[0] if found else "") or ""
+    if duplicate_of and os.environ.get("ICARUS_WRITE_DUPLICATES") != "1":
+        existing = str(found[1]) if found else ""
+        logger.info("icarus: skipped duplicate of %s", duplicate_of)
+        return existing or str(FABRIC_DIR)
+    if duplicate_of:
+        lines.append(f"duplicate_of: {_yaml_scalar(duplicate_of)}")
     if tags:
         lines.append(f"tags: {json.dumps([t.strip() for t in str(tags).split(',') if t.strip()])}")
     if status:
@@ -630,8 +680,15 @@ def recall(query, max_results=5, agent=None, project=None):
 
     _retriever.FABRIC_DIR = FABRIC_DIR
     try:
-        results = _retriever.retrieve(query, max_results=max_results, agent=agent, project=project)
-        return [{"score": score, **entry} for score, entry in results]
+        results = _retriever.retrieve(query, max_results=max_results * 2, agent=agent, project=project)
+        out = []
+        for score, entry in results:
+            if entry.get("duplicate_of"):
+                continue
+            out.append({"score": score, **entry})
+            if len(out) >= max_results:
+                break
+        return out
     except Exception as exc:
         logger.debug("icarus: retrieval error: %s", exc)
         return read_recent(agent, max_results)
