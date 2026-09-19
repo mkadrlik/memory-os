@@ -1,0 +1,2 @@
+# Stored patches contain significant context-line spaces.
+*.diff -whitespace
