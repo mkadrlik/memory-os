@@ -27,8 +27,8 @@ try:
     _HH = hermes_home
     _FD = fabric_dir
 except ImportError:
-    _HH = lambda: Path.home() / ".hermes"
-    _FD = lambda: Path.home() / "fabric"
+    _HH = lambda: Path(os.environ.get("HERMES_HOME", "").strip() or Path.home() / ".hermes").expanduser()
+    _FD = lambda: (_HH() / "fabric" if _HH() != Path.home() / ".hermes" else Path.home() / "fabric")
 
 FABRIC_DIR = Path(os.environ.get("FABRIC_DIR", str(_FD())))
 STATE_DB = Path(os.environ.get("STATE_DB_PATH", str(_HH() / "state.db")))

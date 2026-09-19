@@ -57,7 +57,7 @@ def fabric_dir() -> Path:
     env = os.environ.get("FABRIC_DIR", "").strip()
     if env:
         return Path(env).expanduser()
-    if is_profile():
+    if hermes_home() != Path.home() / ".hermes":
         return hermes_home() / "fabric"
     return Path.home() / "fabric"
 

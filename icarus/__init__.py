@@ -34,7 +34,7 @@ Hooks (automatic):
 
 import logging
 
-from . import schemas, tools, hooks
+from . import schemas, tools, hooks, lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +81,9 @@ def register(ctx):
                       schema=schemas.FABRIC_REPORT, handler=tools.fabric_report)
 
     # hooks
-    ctx.register_hook("on_session_start", hooks.on_session_start)
-    ctx.register_hook("pre_llm_call", hooks.pre_llm_call)
-    ctx.register_hook("post_llm_call", hooks.post_llm_call)
-    ctx.register_hook("on_session_end", hooks.on_session_end)
+    ctx.register_hook("on_session_start", lifecycle.on_session_start)
+    ctx.register_hook("pre_llm_call", lifecycle.pre_llm_call)
+    ctx.register_hook("post_llm_call", lifecycle.post_llm_call)
+    ctx.register_hook("on_session_end", lifecycle.on_session_end)
 
     logger.info("icarus v3 registered (16 tools, 4 hooks)")

@@ -270,8 +270,8 @@ hermes profile create coder
 hermes profile create reviewer --clone
 
 # Install Memory OS / Icarus into each profile
-bash setup.sh --profile coder
-bash setup.sh --profile reviewer
+QDRANT_HOST_PORT=26333 REDIS_HOST_PORT=26379 bash setup.sh --profile coder
+QDRANT_HOST_PORT=36333 REDIS_HOST_PORT=36379 bash setup.sh --profile reviewer
 
 hermes -p coder chat
 ```

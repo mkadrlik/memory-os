@@ -17,13 +17,13 @@ services:
         echo "bind 0.0.0.0" >> /usr/local/etc/redis/redis.conf &&
         echo "appendonly yes" >> /usr/local/etc/redis/redis.conf &&
         echo "maxmemory 512mb" >> /usr/local/etc/redis/redis.conf &&
-        echo "maxmemory-policy allkeys-lru" >> /usr/local/etc/redis/redis.conf &&
+        echo "maxmemory-policy noeviction" >> /usr/local/etc/redis/redis.conf &&
         redis-server /usr/local/etc/redis/redis.conf
       '
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -34,9 +34,10 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.17.1
+    entrypoint: ["/bin/sh", "-c", "if [ -z \"$${QDRANT__SERVICE__API_KEY}\" ]; then unset QDRANT__SERVICE__API_KEY; fi; exec ./entrypoint.sh"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:${QDRANT_HOST_PORT:-6333}:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -76,6 +77,13 @@ services:
       ARQ_MAX_JOBS: "10"
       ARQ_KEEP_RESULT: "3600"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LLM_BACKEND: ${LLM_BACKEND:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-deepseek-v4-flash:cloud}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-deepseek/deepseek-v4.1-flash}
+      STATE_DB_PATH: /hermes/state.db
+      WIKI_PATH: /wiki
     volumes:
       - ${MEMORY_OS_WIKI_PATH:-./wiki}:/wiki:ro
       - ${MEMORY_OS_HERMES_HOME:-./hermes}:/hermes:rw

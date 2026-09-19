@@ -398,7 +398,7 @@ def _memory_warning_context(error_code):
     return (
         "[memory-retrieval-warning]\n"
         f"Dense semantic Wiki retrieval degraded ({error_code}). "
-        "Before any other response text, tell the user exactly:\n"
+        "Mention this limitation when it affects the answer. Diagnostic summary:\n"
         f"{warning}"
     )
 
@@ -418,7 +418,7 @@ def _resolve_state_db():
     home = getattr(state, "hermes_home", None)
     if callable(home):
         candidates.append(home() / "state.db")
-    candidates.append(Path.home() / ".hermes" / "state.db")
+    # Never cross into the default profile when an explicit profile has no DB.
     for c in candidates:
         if c and c.exists():
             return c

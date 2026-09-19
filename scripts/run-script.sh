@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Memory OS — wrapper para rodar scripts de manutenção com o ambiente do Hermes
-# Uso: run-script.sh <script.py> [args...]
-# Carrega /home/crdrews/.hermes/.env e executa o script com o venv do Memory OS.
 set -euo pipefail
-VENV_PY=/home/crdrews/Work/memory-os/.venv/bin/python
-exec "$VENV_PY" - "$@" <<'PYEOF'
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+MEMORY_OS_PYTHON="${MEMORY_OS_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
+if [ "$#" -lt 1 ]; then
+    echo "Usage: run-script.sh <script.py> [args...]" >&2
+    exit 2
+fi
+exec "$MEMORY_OS_PYTHON" - "$@" <<'PYCODE'
 import sys, runpy, os
 from pathlib import Path
 from dotenv import load_dotenv
-
-env = Path('/home/crdrews/.hermes/.env')
-if env.exists():
-    load_dotenv(env, override=True)
-
-script = sys.argv[1]
-sys.argv = [script] + sys.argv[2:]
-# scripts/ faz parte do caminho de import para alguns utilitários
-os.environ.setdefault('PYTHONPATH', str(Path(script).resolve().parent.parent))
-runpy.run_path(script, run_name='__main__')
-PYEOF
+home = Path(os.environ.get('HERMES_HOME', '').strip() or Path.home() / '.hermes').expanduser()
+load_dotenv(home / '.env', override=False)
+script = Path(sys.argv[1]).resolve()
+sys.argv = [str(script)] + sys.argv[2:]
+sys.path.insert(0, str(script.parent))
+sys.path.insert(0, str(script.parent.parent))
+runpy.run_path(str(script), run_name='__main__')
+PYCODE

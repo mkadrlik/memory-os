@@ -13,6 +13,7 @@ Usage:
 """
 
 import os
+from urllib.parse import urlsplit
 import sys
 import json
 import uuid
@@ -41,6 +42,7 @@ if not OPENROUTER_KEY:
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.environ.get("QDRANT_COLLECTION", "knowledge_base")
 
+EMBEDDING_DIMS = int(os.environ.get("EMBEDDING_DIMS", "4096"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
 EMBEDDING_API_BASE = os.environ.get(
     "EMBEDDING_API_BASE", "https://openrouter.ai/api/v1"
@@ -209,7 +211,7 @@ def _embedding_endpoint() -> str:
 
 def _embedding_headers() -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if "openrouter.ai" in EMBEDDING_API_BASE.lower():
+    if urlsplit(EMBEDDING_API_BASE).hostname == "openrouter.ai":
         if OPENROUTER_KEY:
             headers["Authorization"] = f"Bearer {OPENROUTER_KEY}"
             headers["HTTP-Referer"] = "https://hermes-agent.local"
@@ -227,7 +229,7 @@ def embed_query_with_status(text: str) -> EmbeddingQueryResult:
     but the stable error code lets the hook make degraded retrieval visible to
     the user instead of silently omitting semantic Wiki context.
     """
-    if "openrouter.ai" in EMBEDDING_API_BASE.lower() and not OPENROUTER_KEY:
+    if urlsplit(EMBEDDING_API_BASE).hostname == "openrouter.ai" and not OPENROUTER_KEY:
         return EmbeddingQueryResult(None, "embedding_credentials_missing")
 
     attempts = EMBEDDING_REQUEST_RETRIES + 1
@@ -240,12 +242,13 @@ def embed_query_with_status(text: str) -> EmbeddingQueryResult:
                 json={
                     "model": EMBEDDING_MODEL,
                     "input": text[:MAX_TEXT_LEN],
+                    "dimensions": EMBEDDING_DIMS,
                 },
                 timeout=REQUEST_TIMEOUT,
             )
             resp.raise_for_status()
             vector = resp.json()["data"][0]["embedding"]
-            if not isinstance(vector, list) or not vector:
+            if not isinstance(vector, list) or len(vector) != EMBEDDING_DIMS:
                 raise ValueError("embedding response contains no vector")
             return EmbeddingQueryResult(vector, None)
         except requests.Timeout as exc:
@@ -318,7 +321,7 @@ def search_knowledge_base(
             # Hybrid: prefetch dense + prefetch sparse → RRF
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
                 json={
                     "prefetch": [
                         {"query": dense_vector, "using": "dense", "limit": top_k * 3},
@@ -335,7 +338,7 @@ def search_knowledge_base(
             # Fallback: dense-only (collections with compatible named vectors)
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
                 json={
                     "query": dense_vector,
                     "using": "dense",
@@ -352,7 +355,7 @@ def search_knowledge_base(
         points = raw_results if isinstance(raw_results, list) else raw_results.get("points", [])
         for r in points:
             score = r.get("score", 0)
-            if score < score_threshold:
+            if sparse_vector is None and score < score_threshold:
                 continue
             payload = r.get("payload", {})
             results.append({
@@ -546,13 +549,15 @@ def search_with_fallback(
     qdrant_latency_ms = 0.0
     t0 = time.perf_counter()
 
-    # Level 1 or 2: Qdrant (hybrid if sparse available, otherwise dense-only)
+    # Level 1 or 2: never send a null query (Qdrant may return arbitrary points).
     try:
+        if dense_vector is None:
+            raise ValueError("Dense embedding unavailable")
         t_q0 = time.perf_counter()
         if sparse_vector is not None:
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
                 json={
                     "prefetch": [
                         {"query": dense_vector, "using": "dense", "limit": top_k * 3},
@@ -569,7 +574,7 @@ def search_with_fallback(
         else:
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
                 json={
                     "query": dense_vector,
                     "using": "dense",
@@ -596,7 +601,7 @@ def search_with_fallback(
             t_q2 = time.perf_counter()
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
                 json={
                     "query": dense_vector,
                     "using": "dense",
@@ -631,10 +636,10 @@ def search_with_fallback(
             try:
                 t_q2 = time.perf_counter()
                 resp = requests.post(
-                    f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
-                    headers={"Content-Type": "application/json"},
+                    f"{QDRANT_URL}/collections/{COLLECTION}/points/query",
+                    headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
                     json={
-                        "vector": dense_vector,
+                        "query": dense_vector,
                         "using": "dense",
                         "limit": top_k,
                         "with_payload": True,
@@ -702,7 +707,7 @@ def update_last_accessed_at(chunk_ids: list) -> None:
         now = datetime.now().astimezone().isoformat()
         requests.post(
             f"{QDRANT_URL}/collections/{COLLECTION}/points/payload",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **({"api-key": os.environ["QDRANT_API_KEY"]} if os.environ.get("QDRANT_API_KEY") else {})},
             json={
                 "points": chunk_ids,
                 "payload": {"last_accessed_at": now},

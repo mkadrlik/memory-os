@@ -1,5 +1,9 @@
 """Shared state: fabric I/O, retriever, training helpers, model registry."""
 
+import fcntl
+import contextlib
+import hashlib
+import sqlite3
 import json
 import logging
 import os
@@ -48,7 +52,7 @@ except ImportError:
         return bool(profile_name())
 
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", "")) if os.environ.get("HERMES_HOME") else None
+HERMES_HOME = hermes_home()
 AGENT_NAME = os.environ.get("HERMES_AGENT_NAME", "")
 PLUGIN_DIR = Path(__file__).parent
 
@@ -59,7 +63,7 @@ FABRIC_DIR = Path(
     os.environ.get(
         "FABRIC_DIR",
         # default: per-profile fabric when a profile is active, else ~/fabric
-        str(hermes_home() / "fabric") if is_profile() else str(Path.home() / "fabric"),
+        str(hermes_home() / "fabric") if hermes_home() != Path.home() / ".hermes" else str(Path.home() / "fabric"),
     )
 )
 
@@ -382,10 +386,35 @@ def _find_duplicate_id(entry_type, summary, threshold=0.92):
     return found[0] if found else None
 
 
-def write_entry(entry_type, content, summary, tier="hot", tags="", platform="cli",
+def write_entry(entry_type, content, summary, *args, automatic=False, **kwargs):
+    """Serialize Fabric writes; normalize exact duplicates and cap auto capture."""
+    from .lifecycle import context
+    kwargs.setdefault("source_session_id", context.get())
+    FABRIC_DIR.mkdir(parents=True, exist_ok=True)
+    normalized = re.sub(r"\s+", " ", content).strip().casefold()
+    digest = hashlib.sha256((entry_type + "\0" + normalized).encode()).hexdigest()
+    with (FABRIC_DIR / '.icarus-write.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with contextlib.closing(sqlite3.connect(FABRIC_DIR / '.icarus-writes.sqlite3', timeout=30)) as db, db:
+            db.execute('CREATE TABLE IF NOT EXISTS writes (hash TEXT PRIMARY KEY,path TEXT,day TEXT,automatic INTEGER)')
+            row = db.execute('SELECT path FROM writes WHERE hash=?', (digest,)).fetchone()
+            if row and Path(row[0]).exists() and os.environ.get('ICARUS_WRITE_DUPLICATES') != '1':
+                return row[0]
+            today = datetime.now(timezone.utc).date().isoformat()
+            if automatic:
+                count = db.execute('SELECT count(DISTINCT path) FROM writes WHERE day=? AND automatic=1', (today,)).fetchone()[0]
+                if count >= int(os.environ.get('ICARUS_MAX_DAILY_ENTRIES', '12')):
+                    raise RuntimeError('Daily automatic capture budget reached')
+            path = _write_entry_unlocked(entry_type, content, summary, *args, **kwargs)
+            if path and Path(path).is_file():
+                db.execute('INSERT OR REPLACE INTO writes VALUES (?,?,?,?)', (digest, path, today, int(automatic)))
+            return path
+
+
+def _write_entry_unlocked(entry_type, content, summary, tier="hot", tags="", platform="cli",
                 status="", outcome="", review_of="", revises="", customer_id="",
                 assigned_to="", training_value="", verified="", evidence="",
-                source_tool="", artifact_paths="", duplicate_of=""):
+                source_tool="", artifact_paths="", duplicate_of="", source_session_id=""):
     """Write a fabric entry with full schema v1 fields. Returns the filepath."""
     FABRIC_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
@@ -405,7 +434,7 @@ def write_entry(entry_type, content, summary, tier="hot", tags="", platform="cli
     else:
         filename = f"{agent}-{entry_type}-{ts}-{suffix}.md"
 
-    sid = session_id or os.environ.get(
+    sid = source_session_id or session_id or os.environ.get(
         "FABRIC_SESSION_ID", f"sess-{now.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}")
     project_id = os.environ.get(
         "FABRIC_PROJECT_ID",
@@ -453,6 +482,8 @@ def write_entry(entry_type, content, summary, tier="hot", tags="", platform="cli
         lines.append(f"verified: {_yaml_scalar(verified)}")
     if evidence:
         lines.append(f"evidence: {_yaml_scalar(evidence)}")
+    if source_session_id:
+        lines.append(f"source_session_id: {_yaml_scalar(source_session_id)}")
     if source_tool:
         lines.append(f"source_tool: {_yaml_scalar(source_tool)}")
     if artifact_paths:

@@ -63,7 +63,8 @@ else
 fi
 
 REPO_URL="https://github.com/ClaudioDrews/memory-os.git"
-REPO_DIR="${HOME}/memory-os"
+REPO_DIR="${MEMORY_OS_ROOT:-${SCRIPT_DIR}}"
+if [ ! -f "${REPO_DIR}/docker/docker-compose.yml" ]; then REPO_DIR="${HOME}/memory-os"; fi
 
 # ── Profile support ─────────────────────────────────────────────────────────
 # Pass --profile <name> to install into that Hermes profile instead of the
@@ -71,21 +72,16 @@ REPO_DIR="${HOME}/memory-os"
 # (<root>/profiles/<name>), so its memory (fabric, state.db, logs) stays
 # isolated from other profiles.
 PROFILE_NAME=""
-_prev_arg=""
-for arg in "$@"; do
-    case "${arg}" in
+while [ "$#" -gt 0 ]; do
+    case "$1" in
         --profile)
-            _prev_arg="--profile"
-            ;;
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then fail "--profile requires a name"; exit 1; fi
+            PROFILE_NAME="$2"; shift 2 ;;
         --profile=*)
-            PROFILE_NAME="${arg#--profile=}"
-            ;;
-        *)
-            if [ "${_prev_arg}" = "--profile" ]; then
-                PROFILE_NAME="${arg}"
-                _prev_arg=""
-            fi
-            ;;
+            PROFILE_NAME="${1#--profile=}"
+            if [ -z "$PROFILE_NAME" ]; then fail "--profile requires a name"; exit 1; fi
+            shift ;;
+        *) fail "Unknown option: $1"; exit 1 ;;
     esac
 done
 
@@ -101,15 +97,27 @@ esac
 if [ -n "${PROFILE_NAME}" ]; then
     HERMES_HOME="${HOME}/.hermes/profiles/${PROFILE_NAME}"
 else
-    HERMES_HOME="${HOME}/.hermes"
+    HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 fi
 # Export so subprocesses (setup/setup_db.py, python3 invocations below) that
 # read HERMES_HOME from the environment see the active profile instead of
 # silently falling back to ~/.hermes.
 export HERMES_HOME
 
-VAULT_PATH="${VAULT_PATH:-${HOME}/vault}"
+VAULT_PATH="${VAULT_PATH:-${HERMES_HOME}/vault}"
 ENV_FILE="${HERMES_HOME}/.env"
+# A profile must never replace another profile's containers/volumes or ports.
+if [ -n "${PROFILE_NAME}" ]; then
+    if [ -z "${QDRANT_HOST_PORT:-}" ] || [ -z "${REDIS_HOST_PORT:-}" ]; then
+        fail "Profile installs require distinct QDRANT_HOST_PORT and REDIS_HOST_PORT"
+        exit 1
+    fi
+    VAULT_PATH="${VAULT_PATH:-${HERMES_HOME}/vault}"
+fi
+QDRANT_HOST_PORT="${QDRANT_HOST_PORT:-6333}"
+REDIS_HOST_PORT="${REDIS_HOST_PORT:-6379}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-memory-os-${PROFILE_NAME:-default}}"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 1: Bootstrap — clone repo if needed
@@ -283,38 +291,40 @@ if [ -z "${OPENROUTER_KEY}" ]; then
 fi
 
 # Generate random Redis password
-REDIS_PW=$(openssl rand -hex 16)
+REDIS_PW="${REDIS_PASSWORD:-}"
+if [ -z "$REDIS_PW" ] && [ -f "$ENV_FILE" ]; then REDIS_PW=$(sed -n 's/^REDIS_PASSWORD=//p' "$ENV_FILE" | head -1); fi
+REDIS_PW="${REDIS_PW:-$(openssl rand -hex 16)}"
 
 # Create Docker Compose .env
-cat > .env << DOCKERENV
+DOCKER_ENV_FILE="${HERMES_HOME}/memory-os-compose.env"
+if [ -n "${PROFILE_NAME}" ]; then STACK_FABRIC="${HERMES_HOME}/fabric"; else STACK_FABRIC="${VAULT_PATH}/fabric"; fi
+umask 077
+cat > "${DOCKER_ENV_FILE}" << DOCKERENV
 OPENROUTER_API_KEY=${OPENROUTER_KEY}
 REDIS_PASSWORD=${REDIS_PW}
-QDRANT_API_KEY=
+QDRANT_API_KEY=${QDRANT_API_KEY}
+QDRANT_HOST_PORT=${QDRANT_HOST_PORT}
+REDIS_HOST_PORT=${REDIS_HOST_PORT}
 EMBEDDING_DIMS=4096
 COLLECTION_NAME=knowledge_base
 LOG_LEVEL=INFO
 MEMORY_OS_WIKI_PATH=${VAULT_PATH}/wiki
 MEMORY_OS_HERMES_HOME=${HERMES_HOME}
-MEMORY_OS_FABRIC_DIR=${VAULT_PATH}/fabric
+MEMORY_OS_FABRIC_DIR=${STACK_FABRIC}
 DOCKERENV
 
-ok "docker/.env created"
-
-# Patch docker-compose.yml: remove Qdrant API key line when empty (v1.17+ enables auth on empty key)
-if [ -z "${QDRANT_API_KEY}" ]; then
-    info "Qdrant API key not set — disabling Qdrant authentication"
-    sed -i '/^.*QDRANT__SERVICE__API_KEY:/s/.*/      # QDRANT__SERVICE__API_KEY: disabled (no key set)/' docker-compose.yml
-fi
+ok "Profile-specific Compose environment created"
+compose() { docker compose --env-file "${DOCKER_ENV_FILE}" -p "${COMPOSE_PROJECT_NAME}" "$@"; }
 
 # Pull pre-built images first (Redis, Qdrant) — fast
 info "Downloading pre-built images (Redis, Qdrant)..."
-docker compose pull redis qdrant 2>&1 | tail -3
+compose pull redis qdrant 2>&1 | tail -3
 ok "Base images downloaded"
 
 # Build worker image — SLOW on first run (gcc + build-essential)
 info "Building worker image (may take 5-10 minutes on first run)..."
 info "  (Future builds will use Docker cache)"
-if docker compose build worker 2>&1; then
+if compose build worker 2>&1; then
     ok "Worker image built"
 else
     fail "Failed to build worker image"
@@ -323,7 +333,7 @@ fi
 
 # Start everything
 info "Starting containers..."
-if docker compose up -d 2>&1; then
+if compose up -d 2>&1; then
     ok "Docker stack started (redis, qdrant, worker)"
 else
     fail "docker compose up failed — check Docker"
@@ -333,7 +343,7 @@ fi
 # Wait for healthy
 info "Waiting for services to become healthy..."
 sleep 3
-if docker compose ps --format json 2>/dev/null | grep -q '"Health":"healthy"'; then
+if compose ps --format json 2>/dev/null | grep -q '"Health":"healthy"'; then
     ok "All services healthy"
 else
     warn "Services may still be starting — check with: docker compose ps"
@@ -347,7 +357,7 @@ cd "${REPO_DIR}"
 # ──────────────────────────────────────────────────────────────────────────────
 banner "Phase 7b: Wiki Watcher"
 
-CRON_ENTRY="0 * * * * cd ${REPO_DIR} && HERMES_HOME=${HERMES_HOME} python3 scripts/wiki_continuous_ingest.py >> ${HERMES_HOME}/logs/wiki-ingest.log 2>&1"
+CRON_ENTRY="0 * * * * cd \"${REPO_DIR}\" && HERMES_HOME=\"${HERMES_HOME}\" python3 scripts/wiki_continuous_ingest.py >> \"${HERMES_HOME}/logs/wiki-ingest.log\" 2>&1"
 # System crontab doesn't propagate Hermes's profile env the way Hermes cron
 # does, so HERMES_HOME is set inline above. The marker is per-profile too —
 # otherwise a second `setup.sh --profile X` run would see the first
@@ -358,10 +368,10 @@ else
     CRON_MARKER="# memory-os wiki watcher"
 fi
 
-if crontab -l 2>/dev/null | grep -qF "${CRON_MARKER}"; then
+if crontab -l 2>/dev/null | grep -qxF "${CRON_MARKER}"; then
     ok "Wiki watcher cron already installed"
 else
-    (crontab -l 2>/dev/null; echo "${CRON_MARKER}"; echo "${CRON_ENTRY}") | crontab -
+    (crontab -l 2>/dev/null || true; echo "${CRON_MARKER}"; echo "${CRON_ENTRY}") | crontab -
     ok "Wiki watcher cron installed (hourly ingestion)"
 fi
 
@@ -401,7 +411,12 @@ add_env "EMBEDDING_API_KEY" ""
 add_env "EMBEDDING_REQUEST_TIMEOUT" "30"
 add_env "EMBEDDING_REQUEST_RETRIES" "1"
 add_env "EMBEDDING_DIMS" "4096"
-add_env "HERMES_AGENT_NAME" "hermes"
+add_env "HERMES_AGENT_NAME" "${PROFILE_NAME:-hermes}"
+add_env "QDRANT_URL" "http://127.0.0.1:${QDRANT_HOST_PORT}"
+add_env "REDIS_HOST" "127.0.0.1"
+add_env "REDIS_PORT" "${REDIS_HOST_PORT}"
+add_env "WIKI_ROOT" "${VAULT_PATH}/wiki"
+add_env "WORKER_WIKI_ROOT" "/wiki"
 add_env "REDIS_PASSWORD" "${REDIS_PW}"
 add_env "OPENROUTER_API_KEY" "${OPENROUTER_KEY}"
 
