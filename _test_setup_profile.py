@@ -31,7 +31,7 @@ def extract(text, start_marker, end_marker):
 with open(SETUP_SH) as f:
     SCRIPT = f.read()
 
-PROFILE_BLOCK = extract(SCRIPT, 'PROFILE_NAME=""', 'VAULT_PATH="${VAULT_PATH:-${HOME}/vault}"')
+PROFILE_BLOCK = extract(SCRIPT, 'PROFILE_NAME=""', 'VAULT_PATH="${VAULT_PATH:-${HERMES_HOME}/vault}"')
 CRON_MARKER_BLOCK = extract(SCRIPT, "CRON_ENTRY=", '\n\nif crontab -l')
 
 check("extracted profile block looks right",
@@ -89,6 +89,10 @@ check("--profile=reviewer: HERMES_HOME under profiles/reviewer",
       re.search(r"^HERMES_HOME=.*/\.hermes/profiles/reviewer$", out, re.M) is not None)
 
 # ── Invalid profile names are rejected (path-traversal hardening) ────────
+
+for args in (["--profile"], ["--profile="], ["--profile", ""]):
+    rc, out, err = run_profile_block(args)
+    check(f"missing profile name rejected: {args!r}", rc != 0)
 
 for bad in ["../../etc", "a/b", "a b", "coder;rm -rf /"]:
     rc, out, err = run_profile_block(["--profile", bad])

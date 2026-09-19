@@ -1,5 +1,7 @@
 # Memory OS — Hermes Agent Memory Operating System
 
+> Local consolidation candidate: [review status](docs/CONSOLIDATION.md), [migration notes](docs/MIGRATION.md). Run `python scripts/test_offline.py` before deployment.
+
 ![Memory OS Banner](assets/banner.jpg)
 
 > **Your agent finally stops forgetting.**  \

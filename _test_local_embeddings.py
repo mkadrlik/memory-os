@@ -29,10 +29,13 @@ class LocalEmbeddingTests(unittest.TestCase):
             "EMBEDDING_API_BASE": ce.EMBEDDING_API_BASE,
             "EMBEDDING_API_KEY": ce.EMBEDDING_API_KEY,
             "EMBEDDING_MODEL": ce.EMBEDDING_MODEL,
+            "EMBEDDING_DIMS": ce.EMBEDDING_DIMS,
             "REQUEST_TIMEOUT": ce.REQUEST_TIMEOUT,
             "EMBEDDING_REQUEST_RETRIES": ce.EMBEDDING_REQUEST_RETRIES,
             "SPARSE_QUERY_ENABLED": ce.SPARSE_QUERY_ENABLED,
         }
+
+        ce.EMBEDDING_DIMS = 3
 
     def tearDown(self):
         for name, value in self.config.items():
@@ -100,7 +103,7 @@ class LocalEmbeddingTests(unittest.TestCase):
             self.assertTrue(loaded.MOUNTED)
             sys.modules.pop("icarus_context_enhancer", None)
 
-    def test_pre_llm_hook_requires_warning_before_answer(self):
+    def test_pre_llm_hook_reports_degradation(self):
         old_tokens = hooks._last_query_tokens
         hooks._last_query_tokens = set()
         try:
@@ -125,7 +128,7 @@ class LocalEmbeddingTests(unittest.TestCase):
         self.assertIsNotNone(result)
         context = result["context"]
         self.assertTrue(context.startswith("[memory-retrieval-warning]"))
-        self.assertIn("Before any other response text", context)
+        self.assertIn("Mention this limitation", context)
         self.assertIn("embedding_timeout", context)
 
 

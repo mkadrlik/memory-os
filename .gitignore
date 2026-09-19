@@ -34,3 +34,8 @@ Thumbs.db
 scripts/test_collapse_live.py
 AGENTS.md
 docker/docker-compose-monitored.yml
+
+# Local verification, staging and private ingestion manifests
+.venv/
+native-staging/
+scripts/_retry_targets.json
