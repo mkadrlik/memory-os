@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # the resolution logic, so there is one source of truth for profile layout.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 try:
-    from hermes_env import hermes_home, profile_name, is_profile
+    from hermes_env import hermes_home, profile_name, is_profile, fabric_dir
 except ImportError:
     def hermes_home() -> Path:
         env = os.environ.get("HERMES_HOME", "").strip()
@@ -51,6 +51,12 @@ except ImportError:
     def is_profile() -> bool:
         return bool(profile_name())
 
+    def fabric_dir() -> Path:
+        env = os.environ.get("FABRIC_DIR", "").strip()
+        if env:
+            return Path(env).expanduser()
+        return hermes_home() / "fabric" if hermes_home() != Path.home() / ".hermes" else Path.home() / "fabric"
+
 
 HERMES_HOME = hermes_home()
 AGENT_NAME = os.environ.get("HERMES_AGENT_NAME", "")
@@ -59,13 +65,7 @@ PLUGIN_DIR = Path(__file__).parent
 if not AGENT_NAME and HERMES_HOME:
     AGENT_NAME = profile_name()
 
-FABRIC_DIR = Path(
-    os.environ.get(
-        "FABRIC_DIR",
-        # default: per-profile fabric when a profile is active, else ~/fabric
-        str(hermes_home() / "fabric") if hermes_home() != Path.home() / ".hermes" else str(Path.home() / "fabric"),
-    )
-)
+FABRIC_DIR = fabric_dir()
 
 # ── Shared regexes (used by hooks.py and scoring) ────────
 DECISION_RE = re.compile(

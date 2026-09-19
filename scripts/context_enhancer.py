@@ -40,7 +40,7 @@ if not OPENROUTER_KEY:
                 break
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-COLLECTION = os.environ.get("QDRANT_COLLECTION", "knowledge_base")
+COLLECTION = os.environ.get("QDRANT_COLLECTION", os.environ.get("COLLECTION_NAME", "knowledge_base"))
 
 EMBEDDING_DIMS = int(os.environ.get("EMBEDDING_DIMS", "4096"))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")

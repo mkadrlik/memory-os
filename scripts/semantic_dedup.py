@@ -35,7 +35,7 @@ except ImportError:
 from hermes_env import hermes_home, logs_dir
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-COLLECTION = os.environ.get("QDRANT_COLLECTION", "knowledge_base")
+COLLECTION = os.environ.get("QDRANT_COLLECTION", os.environ.get("COLLECTION_NAME", "knowledge_base"))
 SCROLL_LIMIT = 50  # paginação Qdrant (evita timeout em coleções grandes)
 SIMILARITY_THRESHOLD = 0.92
 TOP_NEIGHBORS = 10

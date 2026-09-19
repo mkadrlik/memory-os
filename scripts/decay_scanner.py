@@ -31,7 +31,7 @@ from pathlib import Path
 from hermes_env import hermes_home, logs_dir
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-COLLECTION = os.environ.get("QDRANT_COLLECTION", "knowledge_base")
+COLLECTION = os.environ.get("QDRANT_COLLECTION", os.environ.get("COLLECTION_NAME", "knowledge_base"))
 SCROLL_LIMIT = 100  # paginação Qdrant
 LOG_DIR = logs_dir()
 LOG_FILE = LOG_DIR / "decay_scanner.log"
