@@ -195,4 +195,4 @@ commits, `e6066e9`..`3b7576b`:
 Raw logs and the candidate archives stay out of the repository (as
 `docs/validation/.gitignore` requires): candidate tarballs and manifests,
 `install-run*.log`, `install-clean.log`, `c1.out`, `c4.out`, `c3-before/after`
-under `~/Work/memory-os-vm-acceptance/`.
+under the acceptance workspace on the development host (path not published).

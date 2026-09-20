@@ -7,7 +7,7 @@
  
 -        # Miss in the target profile — the model may have dropped the owning
 +        # Explicit profile= is fail-closed: do not silently return another
-+        # profile's session (observed 2026-09-19: profile=lucidus hit default).
+-        # profile's session (observed 2026-09-19: an explicit profile hit default).
 +        if profile is not None and str(profile).strip():
 +            return result
 +
