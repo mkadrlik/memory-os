@@ -280,11 +280,28 @@ ICARUS_DEST="${HERMES_HOME}/plugins/icarus"
 
 if [ -d "icarus" ]; then
     mkdir -p "${HERMES_HOME}/plugins"
-    cp -r icarus/ "${ICARUS_DEST}/"
+    # Replace the dest on every run. `cp -r icarus/ dest/` into an existing
+    # dest nests a second icarus/ directory, which is what a second
+    # (advertised-idempotent) installer run used to do.
+    rm -rf "${ICARUS_DEST}"
+    cp -r icarus "${ICARUS_DEST}"
     ok "Icarus plugin installed at ${ICARUS_DEST}"
 else
     fail "icarus/ directory not found"
     exit 1
+fi
+
+# Hermes 0.21+ copies plugins as opt-in. Without this step, `hermes plugins
+# list` shows icarus as "not enabled" and the hooks never run. --no-allow-tool-override
+# skips the TTY prompt so curl|bash stays non-interactive.
+if command -v hermes >/dev/null 2>&1; then
+    if hermes plugins enable icarus --no-allow-tool-override >/dev/null 2>&1; then
+        ok "Icarus plugin enabled"
+    else
+        warn "Icarus copied but not enabled — run: hermes plugins enable icarus"
+    fi
+else
+    warn "'hermes' not on PATH — enable later: hermes plugins enable icarus"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -612,8 +629,8 @@ if [ "${FAIL}" -eq 0 ]; then
     echo -e "  ${GREEN}${BOLD}✅ Memory OS installed successfully!${NC}"
     echo ""
     echo "  To verify:"
-    echo "    • /plugins          → should show 'icarus'"
-    echo "    • docker compose ps → 3 services (redis, qdrant, worker)"
+    echo "    • hermes plugins list → icarus enabled"
+    echo "    • docker compose -f docker/docker-compose.yml --env-file ${DOCKER_ENV_FILE} -p ${COMPOSE_PROJECT_NAME} ps → 3 services (redis, qdrant, worker)"
     echo "    • fabric_brief()    → fabric entries (initially empty)"
     echo "    • qdrant_search()   → semantic search (requires populated wiki)"
     echo ""

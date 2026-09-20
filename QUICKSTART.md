@@ -43,16 +43,17 @@ Follow [setup/install.md](setup/install.md) — step-by-step guide with validati
 Once installed, confirm the stack is operational:
 
 ```bash
-# Docker services
-docker compose ps    # qdrant + redis + worker should be "healthy"
+# Docker services (compose file lives in docker/; setup.sh writes the env file)
+docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default ps
+# qdrant + redis + worker should be "healthy"
 
 # Qdrant
 curl -s http://localhost:6333/healthz    # should return "ok"
 
-# Icarus plugin
-hermes plugins list | grep icarus
+# Icarus plugin (must be *enabled*, not only copied into ~/.hermes/plugins)
+hermes plugins list | grep icarus        # Status column: enabled
 
-# Gateway (needed for messaging and Hermes cron)
+# Gateway (needed for messaging and Hermes cron; CLI chat loads plugins without it)
 hermes gateway status
 ```
 

@@ -88,25 +88,30 @@ export MEMORY_STORE_PATH=/home/your-user/.hermes/memory_store.db
 
 ### 3. Enable Icarus in Hermes Config
 
-Icarus must be registered as an enabled plugin. Edit `~/.hermes/config.yaml`:
-
-```yaml
-enabled:
-  - hermes-achievements       # optional
-  - icarus                    # required — activates fabric tools + context injection hooks
-```
-
-Then restart the gateway:
+Copying `icarus/` into `~/.hermes/plugins/icarus` is not enough: Hermes 0.21+
+treats user plugins as opt-in. `bash setup.sh` runs the enable step for you.
 
 ```bash
-hermes gateway restart
+hermes plugins enable icarus
 ```
+
+That writes `plugins.enabled: [icarus]` in `~/.hermes/config.yaml` (not a
+top-level `enabled:` list). Then restart the gateway if it is installed as a
+service:
+
+```bash
+hermes gateway restart    # skip if `hermes gateway status` says it is not running
+```
+
+CLI `hermes chat` loads enabled plugins in-process without a gateway.
 
 Verify the plugin loaded:
 
 ```bash
-hermes status
-# → Should show: icarus v0.3.0 (16 tools, 4 hooks)
+hermes plugins list
+# → icarus  enabled  0.3.0
+hermes plugins show icarus
+# → Status: enabled
 ```
 
 ### 4. Docker Infrastructure

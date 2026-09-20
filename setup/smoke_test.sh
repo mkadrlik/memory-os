@@ -115,7 +115,7 @@ check "Icarus plugin installed" \
     "test -f \"${HERMES_HOME}/plugins/icarus/__init__.py\""
 
 check "Icarus plugin loaded" \
-    "hermes plugins list 2>/dev/null | grep -q icarus"
+    "hermes plugins show icarus 2>/dev/null | grep -q 'Status: enabled'"
 
 # ── 3. Embedding ─────────────────────────────────────────────────────────────
 echo ""
