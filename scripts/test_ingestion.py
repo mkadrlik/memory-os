@@ -246,7 +246,7 @@ async def main() -> None:
         ok(f"Job {job.job_id} enqueued")
         result = await wait_for_job(redis, job.job_id, "first ingestion")
         ok(f"Job completed → {json.dumps(result, default=str)}")
-        if result.get("status") not in ("upserted", "dedup"):
+        if result.get("status") not in ("upserted", "updated", "dedup"):
             fail(f"unexpected ingestion status: {result.get('status')!r}")
 
         # ── 3. Verify the point ──────────────────────────────────────────────

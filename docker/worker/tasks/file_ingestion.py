@@ -74,11 +74,18 @@ async def upsert_with_dedup(
     sparse_vector,
     payload: dict,
     dedup_threshold: float = 0.92,
+    source_path: str | None = None,
 ) -> dict:
     """
     Pre-write dedup: searches for similar neighbors before upserting.
-    If cosine similarity >= threshold, merges payload into the existing point.
-    Returns a dict with status: 'dedup' or 'upserted'.
+
+    - A neighbor above the threshold that is *the same document* (same
+      ``file_path``) means the wiki file was edited: the stored content is
+      replaced in place, vectors included.
+    - A neighbor above the threshold from a *different* document is merged
+      (payload union), keeping the existing content.
+
+    Returns a dict with status: 'updated', 'dedup' or 'upserted'.
     """
     try:
         # Use REST API directly — AsyncQdrantClient doesn't have .search() in qdrant-client 1.18.0
@@ -105,6 +112,47 @@ async def upsert_with_dedup(
                 )
             resp.raise_for_status()
             results = resp.json()["result"]
+
+        # Edited document: the same file re-ingested with new content must
+        # replace what is stored. Merging the payload alone (the path below)
+        # left the previous text *and* vector in the collection, so the file
+        # was reported as ingested — and marked ingested by the watcher's
+        # checkpoint — while retrieval kept answering with the stale content.
+        if source_path:
+            for hit in results:
+                if hit["score"] < dedup_threshold:
+                    continue
+                if (hit.get("payload") or {}).get("file_path") != source_path:
+                    continue
+                hit_id = hit["id"]
+                hit_payload = hit.get("payload") or {}
+                new_payload = dict(payload)
+                existing_lineages = hit_payload.get("lineage_ids") or []
+                new_lineages = payload.get("lineage_ids") or []
+                if isinstance(existing_lineages, list) and isinstance(new_lineages, list):
+                    new_payload["lineage_ids"] = sorted(
+                        set(existing_lineages + new_lineages)
+                    )
+                await qdrant.upsert(
+                    collection_name=collection,
+                    points=[PointStruct(
+                        id=hit_id,
+                        vector={"dense": dense_vector, "sparse": sparse_vector},
+                        payload=new_payload,
+                    )],
+                    wait=True,
+                )
+                logger.info(
+                    f"Update: replaced content of chunk {hit_id} "
+                    f"(score={hit['score']:.3f})"
+                )
+                return {
+                    "status": "updated",
+                    "id": str(hit_id),
+                    "existing_id": str(hit_id),
+                    "similarity": hit["score"],
+                }
+
         for hit in results:
             hit_score = hit["score"]
             hit_id = hit["id"]
@@ -256,10 +304,13 @@ async def ingest_file(
         sparse_vector=sparse_vector,
         payload=payload,
         dedup_threshold=0.92,
+        source_path=str(path),
     )
 
     if result["status"] == "dedup":
         logger.info(f"File {path.name} deduplicated (merged into {result['existing_id']}) — similarity {result['similarity']:.3f}")
+    elif result["status"] == "updated":
+        logger.info(f"File {path.name} updated in place ({result['id']}) — similarity {result['similarity']:.3f}")
     else:
         logger.info(f"File {path.name} ingested ({source}) — dense+sparse")
 

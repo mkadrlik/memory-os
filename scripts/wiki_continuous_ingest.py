@@ -134,11 +134,11 @@ async def main():
                 raise RuntimeError("enqueue returned no job (duplicate id or queue rejected)")
             # Só marca sucesso depois do worker terminar. Enfileirar não prova ingestão.
             result = await job.result(timeout=180)
-            if not isinstance(result, dict) or result.get("status") not in {"upserted", "dedup", "skipped"}:
+            if not isinstance(result, dict) or result.get("status") not in {"upserted", "updated", "dedup", "skipped"}:
                 raise RuntimeError("worker did not confirm successful ingestion")
             state[rel_path]["ingested_at"] = datetime.now(timezone.utc).isoformat()
             enqueued += 1
-            print(f"  ✅ Ingerido: {rel_path} (job: {job.job_id[:8]})")
+            print(f"  ✅ Ingerido: {rel_path} (job: {job.job_id[:8]}, {result.get('status')})")
         except Exception as e:
             failed += 1
             error_msg = str(e)
