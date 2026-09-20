@@ -59,11 +59,17 @@ QDRANT_HOST="${QDRANT_HOST:-localhost}"
 QDRANT_PORT="${QDRANT_PORT:-6333}"
 QDRANT_API_KEY="${QDRANT_API_KEY:-}"
 COLLECTION_NAME="${COLLECTION_NAME:-knowledge_base}"
+# The profile directory is not always ~/.hermes (named profiles live under
+# <root>/profiles/<name>), so honour HERMES_HOME instead of assuming the default.
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
+EMBEDDING_DIMS="${EMBEDDING_DIMS:-4096}"
 
 echo "=== Memory OS Smoke Test ==="
 echo "  Redis:  ${REDIS_HOST}:${REDIS_PORT}"
 echo "  Qdrant: ${QDRANT_HOST}:${QDRANT_PORT}"
 echo "  Collection: ${COLLECTION_NAME}"
+echo "  Profile:    ${HERMES_HOME}"
+echo "  Embed dims: ${EMBEDDING_DIMS}"
 echo ""
 
 # ── 1. Infrastructure ────────────────────────────────────────────────────────
@@ -106,7 +112,7 @@ echo ""
 echo "── Icarus Plugin ──"
 
 check "Icarus plugin installed" \
-    "test -f ~/.hermes/plugins/icarus/__init__.py"
+    "test -f \"${HERMES_HOME}/plugins/icarus/__init__.py\""
 
 check "Icarus plugin loaded" \
     "hermes plugins list 2>/dev/null | grep -q icarus"
@@ -115,15 +121,15 @@ check "Icarus plugin loaded" \
 echo ""
 echo "── Embedding ──"
 
-check "Embedding produces 4096d vectors" \
+check "Embedding produces ${EMBEDDING_DIMS}d vectors" \
     "python3 << 'PYEOF'
 from qdrant_client import QdrantClient
 c = QdrantClient(host='${QDRANT_HOST}', port=${QDRANT_PORT},
                  api_key='${QDRANT_API_KEY}' or None, https=False)
 points, _ = c.scroll('${COLLECTION_NAME}', limit=1, with_vectors=True)
 assert len(points) > 0, 'no points found in collection'
-assert len(points[0].vector['dense']) == 4096, \\
-    f'expected 4096 dims, got {len(points[0].vector[\"dense\"])}'
+assert len(points[0].vector['dense']) == ${EMBEDDING_DIMS}, \\
+    f'expected ${EMBEDDING_DIMS} dims, got {len(points[0].vector[\"dense\"])}'
 PYEOF"
 
 # ── 4. Ingestion pipeline ────────────────────────────────────────────────────
@@ -141,15 +147,12 @@ fi
 echo ""
 echo "── Cron Jobs ──"
 
-check "Cron jobs active (≥3)" \
-    "python3 -c \"
-import subprocess, json
-out = subprocess.run(['hermes', 'cron', 'list'],
-                     capture_output=True, text=True).stdout
-# Count lines with '[active]'
-count = out.count('[active]')
-assert count >= 3, f'expected >=3 active cron jobs, got {count}'
-\""
+# setup.sh installs the hourly wiki watcher as a system crontab entry; extra
+# `hermes cron` jobs are an optional, documented alternative (setup/install.md).
+# Accept either so a clean install through the documented path is not reported
+# as a failure.
+check "Scheduled ingestion active (cron or timers)" \
+    "crontab -l 2>/dev/null | grep -qF '# memory-os wiki watcher' || systemctl --user list-timers --all 2>/dev/null | grep -q 'memoryos-'"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
