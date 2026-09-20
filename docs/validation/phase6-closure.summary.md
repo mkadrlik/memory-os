@@ -30,6 +30,14 @@ of HEAD (`sha256 0301ca147597c887c5197d6f2cfd797df5b0c55965c4aeb33353dc05326009d
 133 archive entries, no `.git`, no caches, no databases), giving 112 files,
 tree `sha256 34512eff91f625e861d62167610747943b9d21009c9eb0460adf341ab0f24a1b`.
 
+**Freeze.** The install, the reboot and the paid Hermes/Icarus run were executed at
+`74b9cc8`, i.e. on the code revision tested here. The closure commits that follow it are
+`d10dbc1` (installer data-removal fix), `2cec5e2` (this record), `32b08c8` (publication
+hygiene) and the note you are reading. None of them touches executable code:
+`git diff --name-only 74b9cc8..32b08c8 -- '*.py' '*.sh' '*.yml' '*.yaml' '*.json'` returns
+empty, and the full offline suite was re-run on that tree — **exit 0**, same 57 unittest
+cases plus every standalone suite. No remote is configured; nothing was pushed.
+
 ## 2. Gates on the frozen HEAD (host)
 
 | gate | result |
