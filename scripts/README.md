@@ -10,6 +10,41 @@ Standalone Python scripts that maintain the Qdrant vector database and wiki pipe
 | `backfill_decay_metadata.py` | Populates missing `importance_score`, `last_accessed_at`, `confidence_score` in Qdrant points | Run once before enabling decay scanner |
 | `semantic_dedup.py` | Merges near-duplicate points (cosine >0.92) | Monthly cron |
 
+## Explicit contradiction resolution
+
+After reviewing the evidence, preview a resolution for one point:
+
+```bash
+python scripts/resolve_contradiction.py --url http://127.0.0.1:6333 \
+  --collection knowledge_base --point-id 123 --actor reviewer \
+  --reason "Source checked; document the evidence supporting resolution here"
+```
+
+Use the actual endpoint, collection and point ID. Authentication uses
+`QDRANT_API_KEY`; no profile or endpoint is selected implicitly. Add `--apply`
+to persist. Without it the operation only reads and prints a preview.
+
+Before applying, pause reflection triggers and drain/stop active workers and
+other writers to this point; keep them paused until the command finishes.
+The operation uses a read followed by a payload update, not a compare-and-swap
+transaction. Concurrent reflection or resolution can overwrite audit history
+or apply a stale verdict. Resume writers after completion.
+
+Resolution appends an audit event containing UTC time, actor, reason and prior
+reflection fields. It clears the unresolved flag, replaces the legacy conflict
+note with a resolved marker and resets `reflection_count` to zero so the point
+can be selected again. Confidence, text, vectors, archive status and
+`last_reflected` are preserved. Archived points remain excluded from selection.
+Subsequent valid reflection may change confidence or identify a new conflict.
+Missing points, already-resolved points, empty justification/actor and malformed
+history are rejected. Existing resolution events are retained; the audit captures
+the metadata available at resolution, not earlier notes already overwritten by
+past reflection cycles.
+
+For offline verification use `python scripts/test_offline.py`. Direct unittest
+execution refuses an inherited `MEMORY_OS_ROOT` pointing outside this checkout,
+before importing Icarus. Unset that variable or use the isolated runner.
+
 ## Context Injection
 
 | Script | What it does | Used by |

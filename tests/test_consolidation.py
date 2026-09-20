@@ -13,6 +13,13 @@ import unittest
 from unittest.mock import patch, AsyncMock, Mock
 
 ROOT = Path(__file__).resolve().parents[1]
+configured_root = os.environ.get('MEMORY_OS_ROOT', '').strip()
+if configured_root and Path(configured_root).expanduser().resolve() != ROOT:
+    raise RuntimeError(
+        'MEMORY_OS_ROOT points outside the checkout under test. '
+        'Run python scripts/test_offline.py to use an isolated environment, '
+        'or unset MEMORY_OS_ROOT before running unittest directly.'
+    )
 sys.path[:0] = [str(ROOT), str(ROOT/'scripts'), str(ROOT/'docker/worker')]
 from tasks import reflection as r
 from services import llm
@@ -93,6 +100,20 @@ class ReflectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_high_contradiction_reduces_confidence(self):
         _,q=await self._micro({'contradiction_found':True,'severity':'high','explanation':'conflict'})
         self.assertEqual(q.set_payload.call_args.kwargs['payload']['confidence_score'],0.6)
+
+    async def test_explicit_resolution_allows_consistent_reflection(self):
+        from scripts.resolve_contradiction import resolution_payload
+        previous = {'confidence_score': 0.8, 'reflection_count': 3,
+                    'contradiction_unresolved': True,
+                    'reflection_notes': '[CONSISTENT frozen] old conflict'}
+        resolved = {**previous, **resolution_payload(previous, actor='reviewer', reason='source checked')}
+        good = {'contradiction_found': False, 'severity': 'low', 'explanation': 'supported'}
+        result, q = await self._micro(good, resolved)
+        update = q.set_payload.call_args.kwargs['payload']
+        self.assertFalse(update['contradiction_unresolved'])
+        self.assertEqual(update['confidence_score'], 0.85)
+        self.assertEqual(update['reflection_count'], 1)
+        self.assertEqual(result['frozen'], 0)
 
 class LlmTests(unittest.IsolatedAsyncioTestCase):
     def test_explicit_backend_and_missing_key(self):
