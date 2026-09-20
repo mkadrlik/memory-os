@@ -443,8 +443,14 @@ docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compo
 ```bash
 docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
 rm -rf ~/.hermes/plugins/icarus ~/.hermes/scripts/context_enhancer.py
-crontab -l | grep -v "memory-os wiki watcher" | crontab -
+crontab -l | grep -v -e "memory-os wiki watcher" -e "wiki_continuous_ingest.py" | crontab -
 ```
+
+The cron removal matches **both** lines the installer writes: the marker comment
+and the scheduled command. Matching only the marker left the hourly watcher
+running against a removed stack, and a later reinstall added a second copy of
+the same entry (verified on the acceptance VM: four identical watcher lines
+after one install, one deactivation and one reinstall).
 
 **Remove the data too** — this deletes what the agent remembered. Do it only
 after backing up what you want to keep:
@@ -482,6 +488,36 @@ Icarus is writing to MEMORY.md instead of CREATIVE.md. Verify Icarus fork is ins
 Check: the configured embedding endpoint and its required credential are set,
 `context_enhancer.py` can import, and the gateway was restarted after
 `hooks.py` or embedding environment changes.
+
+Two failure modes worth checking first, because both degrade silently to
+lexical-only retrieval instead of reporting an error:
+
+- `EMBEDDING_API_BASE` must be reachable **from the host**. `host.docker.internal`
+  is a Docker-only name: inside the worker container `extra_hosts` maps it, on
+  the host it does not resolve. With a local Ollama, the profile `.env` needs
+  `EMBEDDING_API_BASE=http://127.0.0.1:11434/v1` (the Compose env file keeps
+  `host.docker.internal`, which is correct there). Symptom:
+  `[CE-ERROR] Dense embedding attempt 1/1 failed: ... Failed to resolve
+  'host.docker.internal'` and `[CE-FALLBACK] ... falling back to lexical`.
+- The BM25 query embedding runs as a subprocess that needs `fastembed`
+  importable. If sparse embedding fails, the hook logs
+  `[CE-ERROR] Embedding sparse failed: ...` and answers come from dense-only
+  search — hybrid search never runs. Check by hand:
+  `python3 -c "import fastembed"`.
+
+### Answers do not reflect an edited wiki file
+Editing a file under the wiki is detected by hash, so the watcher re-enqueues
+it. Re-ingestion replaces the stored content *in place* when the similarity
+search matches the same `file_path` (worker log: `Update: replaced content of
+chunk ...`). If answers keep showing the previous revision, confirm the worker
+was rebuilt after upgrading (`docker compose ... build worker`) and that the
+file's hash really changed in `~/.hermes/wiki_ingest_state.json`.
+
+Note: two *different* files whose content is similar above the dedup threshold
+(0.92 by default) are still merged into one point and the second file's text is
+not stored. Lower the load of near-duplicate documents, or raise
+`dedup_threshold` in `docker/worker/tasks/file_ingestion.py`, if documents that
+differ in a single fact must both remain retrievable.
 
 ### Decay scanner produces "0 archived" every week
 Most likely: point payloads missing `last_accessed_at` or `importance_score` metadata. Run backfill before enabling decay.
