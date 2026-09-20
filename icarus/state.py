@@ -691,7 +691,14 @@ def _load_retriever():
         if p and p.exists():
             try:
                 import importlib.util
-                spec = importlib.util.spec_from_file_location("fabric_retrieve", str(p))
+                # The retriever has a relative import of ``parsing``. Loading it
+                # as a top-level module (``fabric_retrieve``) makes that import
+                # fail when the fallback ``from parsing`` is not on sys.path,
+                # silently degrading recall to read_recent. Keep it under this
+                # plugin package so Python resolves ``.parsing`` correctly.
+                package = __package__ or "icarus"
+                module_name = f"{package}.fabric_retrieve"
+                spec = importlib.util.spec_from_file_location(module_name, str(p))
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
                 mod.FABRIC_DIR = FABRIC_DIR

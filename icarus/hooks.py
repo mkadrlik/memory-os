@@ -662,7 +662,27 @@ _COLLAPSE_DEBUG = os.environ.get("ICARUS_COLLAPSE_DEBUG", "0").strip().lower() i
 
 
 def _fabric_text(e):
-    return e.get("summary") or e.get("_body") or e.get("body") or ""
+    summary = e.get("summary") or ""
+    body = e.get("_body") or e.get("body") or ""
+    return f"{summary} {body}".strip()
+
+
+def _fabric_context_excerpt(entry, query=""):
+    """Render a bounded Fabric memory with both its label and useful evidence."""
+    summary = _sanitize_context_text(entry.get("summary", ""), max_len=160)
+    body = entry.get("_body") or entry.get("body") or ""
+    body = _sanitize_context_text(body, max_len=6000)
+    query_tokens = _tokenize(query)
+    if body and query_tokens:
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", body) if part.strip()]
+        if sentences:
+            best = max(sentences, key=lambda part: len(query_tokens & _tokenize(part)))
+            if query_tokens & _tokenize(best):
+                body = best
+    body = body[:400]
+    if summary and body:
+        return f"{summary}\n  {body}"
+    return summary or body
 
 
 def _qdrant_text(r):
@@ -879,9 +899,7 @@ def pre_llm_call(session_id="", user_message="", is_first_turn=False, **kwargs):
         lines = ["[fabric] relevant to your request:"]
         emitted = 0
         for e in results:
-            summary = _sanitize_context_text(
-                e.get("summary") or e.get("_body", e.get("body", "")), max_len=80
-            )
+            summary = _fabric_context_excerpt(e, user_message)
             eid = str(e.get("id", "")) or summary[:60]
             if eid in _injected_fabric:
                 continue

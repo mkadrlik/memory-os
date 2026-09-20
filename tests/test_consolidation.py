@@ -271,6 +271,45 @@ class RecallTests(unittest.TestCase):
         with patch.object(ce,'EMBEDDING_API_BASE','http://localhost/v1'),patch.object(ce,'EMBEDDING_DIMS',3),patch.object(ce,'EMBEDDING_REQUEST_RETRIES',0),patch.object(ce.requests,'post',return_value=response):
             self.assertIsNotNone(ce.embed_query_with_status('test').error)
 
+    def test_fabric_context_includes_bounded_body_evidence(self):
+        entry = {'id': 'memory-1', 'summary': 'Backup policy',
+                 '_body': ' '.join(['Unrelated detail.'] * 80) +
+                          ' The archive runs every Tuesday at 03:00 UTC.'}
+        with patch.object(state, 'recall', return_value=[entry]), \
+             patch.object(state, 'log_recall'), \
+             patch.object(hooks, '_search_qdrant_with_status', return_value=([], None)), \
+             patch.object(hooks, '_search_sessions', return_value=[]), \
+             patch.object(hooks, '_apply_collapse', side_effect=lambda q, f, d, s, facts: (f, d, s, facts)):
+            hooks._last_query_tokens = set()
+            hooks._injected_fabric.clear()
+            result = hooks.pre_llm_call('fabric-body-test', 'when does the archive run')
+        self.assertIn('Backup policy', result['context'])
+        self.assertIn('Tuesday at 03:00 UTC', result['context'])
+        self.assertLess(len(result['context']), 700)
+
+    def test_state_loader_keeps_fabric_retriever_package_imports_working(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            fabric = home / 'fabric'
+            with patch.object(state, 'FABRIC_DIR', fabric), \
+                 patch.dict(os.environ, {'HERMES_HOME': str(home),
+                                         'FABRIC_DIR': str(fabric),
+                                         'STATE_DB_PATH': str(home / 'state.db')}):
+                state.write_entry(
+                    'decision',
+                    'The release marker for the handoff is MEMORY-731.',
+                    'Confirmed release marker MEMORY-731',
+                )
+                retriever = state._load_retriever()
+                self.assertIsNotNone(retriever)
+                hits = retriever.retrieve(
+                    'What release marker was confirmed for the handoff?',
+                    max_results=5,
+                    agent=state.AGENT_NAME or None,
+                )
+            self.assertTrue(hits)
+            self.assertIn('MEMORY-731', hits[0][1].get('_body', ''))
+
 
 class QueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_uses_sorted_set_and_detects_running_jobs(self):

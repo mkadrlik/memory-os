@@ -82,8 +82,9 @@ async def upsert_with_dedup(
     - A neighbor above the threshold that is *the same document* (same
       ``file_path``) means the wiki file was edited: the stored content is
       replaced in place, vectors included.
-    - A neighbor above the threshold from a *different* document is merged
-      (payload union), keeping the existing content.
+    - A neighbor above the threshold from a *different* document is deduplicated
+      only when its normalized text is identical. Vector similarity alone is not
+      evidence that two documents contain the same facts.
 
     Returns a dict with status: 'updated', 'dedup' or 'upserted'.
     """
@@ -157,7 +158,14 @@ async def upsert_with_dedup(
             hit_score = hit["score"]
             hit_id = hit["id"]
             hit_payload = hit.get("payload") or {}
-            if hit_score >= dedup_threshold:
+            existing_text = hit_payload.get("text")
+            incoming_text = payload.get("text")
+            same_text = (
+                isinstance(existing_text, str)
+                and isinstance(incoming_text, str)
+                and " ".join(existing_text.split()) == " ".join(incoming_text.split())
+            )
+            if hit_score >= dedup_threshold and same_text:
                 existing_payload = hit_payload
                 # Merge: tags (union)
                 existing_tags = set(existing_payload.get("tags", []))
@@ -219,7 +227,6 @@ async def upsert_with_dedup(
         "status": "upserted",
         "id": point.id,
     }
-
 
 async def ingest_file(
     qdrant: AsyncQdrantClient,

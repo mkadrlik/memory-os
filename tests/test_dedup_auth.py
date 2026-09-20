@@ -137,10 +137,13 @@ class DedupAuthTests(unittest.IsolatedAsyncioTestCase):
         qdrant.upsert.assert_awaited_once()
         qdrant.set_payload.assert_not_called()
 
-    async def test_duplicate_above_threshold_is_merged(self):
+    async def test_identical_cross_document_text_is_merged(self):
+        text = "same normalized content"
         hit = {"id": "abc", "score": 0.97,
-               "payload": {"tags": ["old"], "source_type": "ai", "importance_score": 0.4}}
-        result, error, _, qdrant = await self._run(_Response(200, {"result": [hit]}))
+               "payload": {"text": text, "tags": ["old"], "source_type": "ai", "importance_score": 0.4}}
+        result, error, _, qdrant = await self._run(
+            _Response(200, {"result": [hit]}),
+            payload={"text": text, "tags": ["new"], "created_at": "2026-01-01T00:00:00Z"})
         self.assertIsNone(error)
         self.assertEqual(result["status"], "dedup")
         self.assertEqual(result["existing_id"], "abc")
@@ -211,17 +214,17 @@ class DedupAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["id"], "mine")
         qdrant.set_payload.assert_not_called()
 
-    async def test_other_document_above_threshold_is_still_merged(self):
-        """Cross-document dedup keeps its historical merge behaviour."""
+    async def test_similar_other_document_with_distinct_text_is_preserved(self):
+        """A high vector score must not erase a distinct document's content."""
         hit = {"id": "abc", "score": 0.97,
-               "payload": {"file_path": "/wiki/raw/outro.md", "tags": ["old"]}}
+               "payload": {"file_path": "/wiki/raw/outro.md", "text": "fato anterior", "tags": ["old"]}}
         result, _, _, qdrant = await self._run(
             _Response(200, {"result": [hit]}),
-            payload={"file_path": "/wiki/raw/doc.md", "text": "novo", "tags": []},
+            payload={"file_path": "/wiki/raw/doc.md", "text": "fato atualizado", "tags": []},
             source_path="/wiki/raw/doc.md")
-        self.assertEqual(result["status"], "dedup")
-        qdrant.set_payload.assert_awaited_once()
-        qdrant.upsert.assert_not_called()
+        self.assertEqual(result["status"], "upserted")
+        qdrant.set_payload.assert_not_called()
+        qdrant.upsert.assert_awaited_once()
 
 
 if __name__ == "__main__":
