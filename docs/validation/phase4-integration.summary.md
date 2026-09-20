@@ -17,7 +17,7 @@ Bundle exercised in the lab: sha256 `e951ffb1a518696e10a2ccda6e047f2042aeb92f3e6
 
 | gate | result |
 |---|---|
-| `python scripts/test_offline.py` | exit 0 — 42 tests in `unittest discover` + 5, no failures |
+| `python scripts/test_offline.py` | exit 0 — 42 tests in `unittest discover` + 5, no failures (added later, for the Phase 2 example: 49 + 5, see `phase2-example.summary.md`) |
 | `tests/test_dedup_auth.py` | 9 tests, all pass |
 | `bash -n` on `setup.sh`, `setup/smoke_test.sh`, `scripts/run-script.sh` | syntax ok |
 | `python -m compileall` over `scripts/`, `docker/worker/`, `setup/`, `tests/`, `icarus/` | exit 0 |
