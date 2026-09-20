@@ -40,21 +40,29 @@ for in the installation test; the candidate tree is authoritative.
 |---|---|---|---|
 | E1 | Omarchy + dedicated venv | syntax, offline suites, compose parsing, dedup regression | available |
 | E2 | ThinkPad lab (dedicated Compose project) | real Redis/Qdrant/worker + local fake LLM/embedding server | available; stopped between uses (`stop`, never `down -v`), credentials only in the lab's own env file outside this repository |
-| E3 | Disposable VM, clean OS image | clean install through the documented path, reboot, Hermes integration | **blocked — see below** |
-| E4 | Real provider (paid) | memory utility comparison | **blocked — needs budget authorization** |
+| E3 | Disposable VM, clean OS image | clean install through the documented path, reboot, Hermes integration | **available — used** (QEMU/KVM guest; clean installs, second run, reboot and Hermes integration at `74b9cc8`) |
+| E4 | Real provider (paid) | memory utility comparison | **available — used** (Cláudio's test key, US$ 5 ceiling; US$ 0.0671 spent in total) |
 
-### E3 / E4 block
+### E3 / E4 block — resolved during the run
 
-Creating a VM requires `qemu-system-x86` (and `qemu-img`), which are **not
-installed** on either host. Installing them needs administrator privileges
-(`pacman -S`), which the standing authorization does not cover. Neither host has a
-usable fallback: on the Omarchy the Docker daemon is not reachable by this user
-(not in the `docker` group), and the ThinkPad has `/dev/kvm` restricted to
-`root:kvm` with the user outside that group.
+This section originally recorded both environments as **blocked**: creating a VM needs
+`qemu-system-x86`/`qemu-img`, which were not installed, and no usable fallback existed
+(no Docker access for this user on the Omarchy; `/dev/kvm` restricted on the ThinkPad). A
+container restart is still **not** an acceptable substitute for the VM reboot test.
 
-A container restart is **not** an acceptable substitute for the VM reboot test.
+Both blockers were cleared later in the acceptance run — a QEMU/KVM host became available
+(nothing in this run used `sudo` on the host) and the paid provider was explicitly
+authorised with Cláudio's test key under a US$ 5 ceiling. E3 and E4 were then exercised in
+full; the per-criterion verdicts, the amounts spent and the criteria that remain unmet or
+blocked are recorded in [`validation/phase6-closure.summary.md`](validation/phase6-closure.summary.md).
 
 ## 4. Acceptance criteria
+
+> **Status (2026-09-20, review closed).** The checkboxes below are the plan's original
+> skeleton, left as written so the plan is not rewritten after the fact. The per-criterion
+> verdicts for the whole plan — approved, reproved or blocked, each with the revision and
+> the command that produced the evidence — are recorded in
+> [`validation/phase6-closure.summary.md`](validation/phase6-closure.summary.md).
 
 ### Phase 3 — fixes
 - [ ] **F1 dedup auth**: `docker/worker/tasks/file_ingestion.py` sends the Qdrant key when configured.
