@@ -34,6 +34,10 @@ git clone https://github.com/ClaudioDrews/memory-os.git
 cd memory-os
 ```
 
+No git? Download the archive (Code → Download ZIP, or a release tarball) and
+extract it anywhere — `setup.sh` accepts a copied tree that has no `.git` as
+long as it contains `docker/docker-compose.yml`.
+
 ## 2. Install
 
 Follow [setup/install.md](setup/install.md) — step-by-step guide with validation checkpoints.

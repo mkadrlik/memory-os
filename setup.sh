@@ -127,6 +127,18 @@ banner "Phase 1: Bootstrap"
 if [ -d "${REPO_DIR}/.git" ]; then
     ok "Repo already exists at ${REPO_DIR}"
     cd "${REPO_DIR}"
+elif [ -f "${REPO_DIR}/docker/docker-compose.yml" ] && [ -f "${REPO_DIR}/setup.sh" ]; then
+    # A usable checkout is a tree that carries the compose file — not
+    # necessarily a clone. Archive-extracted trees (GitHub "Download ZIP", a
+    # release tarball) and plain copies have no .git; testing only for .git made
+    # the installer `git clone` over a non-empty directory and abort with
+    # `fatal: destination path ... already exists` (exit 128 under pipefail).
+    ok "Using existing checkout at ${REPO_DIR} (copied tree, no .git)"
+    cd "${REPO_DIR}"
+elif [ -e "${REPO_DIR}" ] && [ -n "$(ls -A "${REPO_DIR}" 2>/dev/null)" ]; then
+    fail "${REPO_DIR} exists but is not a Memory OS checkout"
+    fail "Move it aside, or set MEMORY_OS_ROOT to the checkout location, then re-run"
+    exit 1
 else
     info "Cloning Memory OS..."
     git clone "${REPO_URL}" "${REPO_DIR}" 2>&1 | tail -1

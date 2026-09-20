@@ -133,6 +133,75 @@ check("profile markers differ from the default marker",
 check("two different profiles get two different markers",
       coder_marker != reviewer_marker)
 
+# ── Phase 1 bootstrap: a copied tree (no .git) must install ─────────────────
+# Regression: the bootstrap used to key only on `.git`, so a tree extracted from
+# an archive (GitHub "Download ZIP", a release tarball) fell through to
+# `git clone` over a non-empty directory and aborted with
+# `fatal: destination path ... already exists` (exit 128 under pipefail).
+import tempfile
+from pathlib import Path
+
+BOOTSTRAP_BLOCK = extract(
+    SCRIPT,
+    'if [ -d "${REPO_DIR}/.git" ]',
+    'banner "Phase 2: Pre-flight Checks"',
+)
+
+
+def run_bootstrap(repo_dir):
+    """Run the Phase 1 bootstrap block with a stubbed git (never hits network)."""
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+PASS=0; FAIL=0
+ok()   {{ printf "OK: %s\\n" "$1"; PASS=$((PASS + 1)); }}
+fail() {{ printf "FAIL: %s\\n" "$1"; FAIL=$((FAIL + 1)); }}
+info() {{ printf "INFO: %s\\n" "$1"; }}
+git()  {{ printf "GIT_CALLED: %s\\n" "$*"; mkdir -p "$REPO_DIR"; }}
+REPO_URL="https://example.invalid/memory-os.git"
+REPO_DIR="{repo_dir}"
+{BOOTSTRAP_BLOCK}
+printf "REACHED_END\\n"
+"""
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+
+def make_tree(root, *, git=False, checkout=False, junk=False):
+    p = Path(root)
+    p.mkdir(parents=True, exist_ok=True)
+    if git:
+        (p / ".git").mkdir()
+    if checkout:
+        (p / "docker").mkdir()
+        (p / "docker" / "docker-compose.yml").write_text("services: {}\n")
+        (p / "setup.sh").write_text("#!/usr/bin/env bash\n")
+    if junk:
+        (p / "random.txt").write_text("not a checkout\n")
+    return str(p)
+
+
+with tempfile.TemporaryDirectory(prefix="memory-os-bootstrap-") as tmp:
+    clone_case = make_tree(str(Path(tmp) / "clone"), git=True)
+    r = run_bootstrap(clone_case)
+    check("bootstrap: existing clone is reused, no git call",
+          "Repo already exists" in r.stdout and "GIT_CALLED" not in r.stdout)
+
+    copied_case = make_tree(str(Path(tmp) / "copied"), checkout=True)
+    r = run_bootstrap(copied_case)
+    check("bootstrap: copied tree without .git is accepted",
+          "Using existing checkout" in r.stdout and "GIT_CALLED" not in r.stdout
+          and r.returncode == 0)
+
+    junk_case = make_tree(str(Path(tmp) / "junk"), junk=True)
+    r = run_bootstrap(junk_case)
+    check("bootstrap: non-checkout directory fails with a clear message",
+          r.returncode != 0 and "is not a Memory OS checkout" in r.stdout
+          and "GIT_CALLED" not in r.stdout)
+
+    missing_case = str(Path(tmp) / "does-not-exist")
+    r = run_bootstrap(missing_case)
+    check("bootstrap: absent directory still clones",
+          "GIT_CALLED" in r.stdout and "REACHED_END" in r.stdout)
+
 if all_ok:
     print("=== ALL SETUP.SH PROFILE TESTS PASS ===")
     sys.exit(0)
