@@ -13,7 +13,7 @@ the corresponding real integration.
 
 | item | value |
 |---|---|
-| checkout | `/home/crdrews/Work/memory-os-consolidated` |
+| checkout | the candidate tree on the development host (local absolute path deliberately not published) |
 | branch | `consolidate/review-2026-09-19` |
 | base | `aee86c82` |
 | issue #19 artifacts | `scripts/resolve_contradiction.py`, `tests/test_resolution.py`, guard in `tests/test_consolidation.py`, `docs/CONSOLIDATION.md`, `scripts/README.md` |
