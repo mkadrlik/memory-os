@@ -214,7 +214,8 @@ Add to your Hermes profile `.env` (e.g. `~/.hermes/.env`):
 # Required
 FABRIC_DIR=/home/your-user/vault/fabric
 
-# Required only when using OpenRouter as embedding backend
+# Required when using OpenRouter — for embeddings *and* for Icarus session
+# extraction (the automatic capture)
 OPENROUTER_API_KEY=sk-or-...
 
 # Strongly recommended
@@ -222,9 +223,28 @@ ICARUS_EXTRACTION_MAX_TOKENS=4096
 ICARUS_EXTRACTION_MODEL=deepseek/deepseek-v4-flash
 EMBEDDING_DIMS=4096
 
+# Local / non-OpenRouter LLM for Icarus session extraction.
+# Icarus resolves its extraction endpoint in this order: ICARUS_ENDPOINT →
+# DEEPSEEK_API_KEY → OPENROUTER_API_KEY. With none of them set it cannot
+# extract anything, the turn is recorded as `empty_or_unavailable` in
+# ~/.hermes/icarus-capture.sqlite3, and **no memory is written** — the session
+# looks normal and the loss is silent. For a local model, point ICARUS_ENDPOINT
+# at its OpenAI-compatible chat endpoint and name any non-empty variable in
+# ICARUS_API_KEY_ENV (local endpoints ignore the key value):
+# ICARUS_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
+# ICARUS_API_KEY_ENV=OLLAMA_PLACEHOLDER_KEY
+# ICARUS_EXTRACTION_MODEL=qwen2.5:7b-instruct
+# OLLAMA_PLACEHOLDER_KEY=ollama-local
+
 # Optional — Embedding backend (defaults to OpenRouter)
 # EMBEDDING_API_BASE=https://openrouter.ai/api/v1
 # EMBEDDING_MODEL=qwen/qwen3-embedding-8b
+
+# Optional — automatic-capture budget: distinct entries the automatic capture
+# may write per day (manual fabric_write is not counted). Reaching it stops
+# automatic capture for the rest of the day; each turn is recorded as
+# `budget_reached` in ~/.hermes/icarus-capture.sqlite3.
+# ICARUS_MAX_DAILY_ENTRIES=12
 
 # Optional — API key for non-OpenRouter authenticated embedding endpoints
 # (vLLM with --api-key, custom hosted services). Not needed for OpenRouter

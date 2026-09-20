@@ -15,8 +15,12 @@ need them: the Hermes runtime (`~/.hermes/hermes-agent/venv`, no pip of its own 
 the script uses the `uv` that ships with Hermes) and the system `python3` used by
 the scheduled scripts. No `pip` package or sudo is required for that step.
 
-No API key is required if you use a local embedding endpoint — see
-[setup/install.md](setup/install.md) section 5 for the Ollama example.
+No API key is required if you use a local **embedding** endpoint — see
+[setup/install.md](setup/install.md) section 5 for the Ollama example. Icarus
+session extraction (the automatic memory capture) still needs an LLM: either an
+OpenRouter/DeepSeek key, or `ICARUS_ENDPOINT` pointed at a local
+OpenAI-compatible chat endpoint — without one, capture records the turn as
+`empty_or_unavailable` and silently writes no memory. Section 5 covers both.
 
 > Prefer manual control? Follow [setup/install.md](setup/install.md) — step-by-step guide with validation checkpoints.
 
