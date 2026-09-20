@@ -21,8 +21,18 @@ logger = logging.getLogger("cognitive-worker.file_ingest")
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "knowledge_base")
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant-maas")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 WIKI_PATH = os.environ.get("WIKI_PATH", "/wiki")
 MAX_TEXT_LEN = 8000
+
+
+class QdrantAuthError(RuntimeError):
+    """The Qdrant endpoint rejected the request (HTTP 401/403).
+
+    Raised instead of falling through to the plain upsert: with authentication
+    enabled, a rejected pre-write search means deduplication did NOT run, and
+    silently inserting would create a duplicate.
+    """
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -72,6 +82,12 @@ async def upsert_with_dedup(
     """
     try:
         # Use REST API directly — AsyncQdrantClient doesn't have .search() in qdrant-client 1.18.0
+        # Authenticate when a key is configured: an authenticated Qdrant answers
+        # 401 to an unauthenticated search, and the old code swallowed it in the
+        # generic handler below and inserted without deduplicating.
+        headers = {"Content-Type": "application/json"}
+        if QDRANT_API_KEY:
+            headers["api-key"] = QDRANT_API_KEY
         async with httpx.AsyncClient(timeout=30) as http:
             resp = await http.post(
                 f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{collection}/points/search",
@@ -80,7 +96,13 @@ async def upsert_with_dedup(
                     "limit": 10,
                     "with_payload": True,
                 },
+                headers=headers,
             )
+            if resp.status_code in (401, 403):
+                raise QdrantAuthError(
+                    f"Pre-write dedup search rejected with HTTP {resp.status_code}; "
+                    "refusing to insert without deduplication"
+                )
             resp.raise_for_status()
             results = resp.json()["result"]
         for hit in results:
@@ -132,6 +154,10 @@ async def upsert_with_dedup(
                     "existing_id": str(hit_id),
                     "similarity": hit_score,
                 }
+    except QdrantAuthError:
+        # Authentication failure is not a transient dedup error: failing loudly is
+        # the only way to avoid a silent duplicate. Let it abort the job.
+        raise
     except Exception as e:
         logger.warning(f"Error in pre-write dedup: {e}")
     # Fallback: normal upsert
