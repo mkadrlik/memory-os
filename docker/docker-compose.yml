@@ -22,12 +22,15 @@ services:
       '
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # read at runtime by redis-cli; keeps the password out of the healthcheck
+      # command line (and therefore out of `docker inspect`)
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5

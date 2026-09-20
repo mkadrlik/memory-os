@@ -27,6 +27,9 @@ from pathlib import Path
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.environ.get("QDRANT_COLLECTION", "knowledge_base")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+QDRANT_AUTH = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+
 if not OPENROUTER_KEY:
     _env = Path.home() / ".env"
     if _env.exists():
@@ -106,7 +109,7 @@ def search_knowledge_base(vector: List[float], domain_tags: List[str]) -> List[D
     try:
         r = requests.post(
             f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **QDRANT_AUTH},
             json={"vector": vector, "limit": TOP_K * 3, "with_payload": True},
             timeout=REQUEST_TIMEOUT
         )

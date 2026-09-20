@@ -1,5 +1,5 @@
 redis>=5.0.0
-qdrant-client>=1.17.0
+qdrant-client>=1.17.0,<1.18.0
 httpx>=0.28.0
 arq>=0.28.0
 pydantic>=2.12.0

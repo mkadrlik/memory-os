@@ -32,6 +32,9 @@ from hermes_env import hermes_home, logs_dir
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.environ.get("QDRANT_COLLECTION", os.environ.get("COLLECTION_NAME", "knowledge_base"))
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+QDRANT_AUTH = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+
 SCROLL_LIMIT = 100  # paginação Qdrant
 LOG_DIR = logs_dir()
 LOG_FILE = LOG_DIR / "decay_scanner.log"
@@ -103,7 +106,7 @@ def scroll_chunks(collection: str, limit: int = SCROLL_LIMIT):
         try:
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{collection}/points/scroll",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **QDRANT_AUTH},
                 json=payload,
                 timeout=30,
             )
@@ -139,7 +142,7 @@ def update_point_archived(point_id: str, collection: str, decay_score: float, dr
     try:
         resp = requests.post(
             f"{QDRANT_URL}/collections/{collection}/points/payload",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **QDRANT_AUTH},
             json={
                 "points": [point_id],
                 "payload": {

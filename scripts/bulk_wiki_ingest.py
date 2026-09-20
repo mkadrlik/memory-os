@@ -29,6 +29,9 @@ except ImportError:
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.environ.get("COLLECTION_NAME", "knowledge_base")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+QDRANT_AUTH = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+
 WIKI_ROOT = Path(os.environ.get("WIKI_ROOT", str(Path.home() / "vault" / "wiki")))
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
 EMBEDDING_DIMS = 4096
@@ -126,7 +129,7 @@ async def upsert_to_qdrant(session: aiohttp.ClientSession, points: list[dict]) -
     try:
         async with session.put(
             f"{QDRANT_URL}/collections/{COLLECTION}/points",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **QDRANT_AUTH},
             json={"points": points},
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
@@ -149,7 +152,7 @@ async def main():
     connector = aiohttp.TCPConnector(limit=20)
     async with aiohttp.ClientSession(connector=connector) as session:
         # Verificar coleção — criar se não existir
-        async with session.get(f"{QDRANT_URL}/collections/{COLLECTION}") as r:
+        async with session.get(f"{QDRANT_URL}/collections/{COLLECTION}", headers=QDRANT_AUTH) as r:
             if r.status != 200:
                 print(f"⚠️  Coleção {COLLECTION} não existe. Criando...")
                 collection_config = {
@@ -165,7 +168,7 @@ async def main():
                 }
                 async with session.put(
                     f"{QDRANT_URL}/collections/{COLLECTION}",
-                    headers={"Content-Type": "application/json"},
+                    headers={"Content-Type": "application/json", **QDRANT_AUTH},
                     json=collection_config,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as cr:
@@ -307,7 +310,7 @@ async def main():
 
     # Verificar count final
     async with aiohttp.ClientSession() as s:
-        async with s.get(f"{QDRANT_URL}/collections/{COLLECTION}") as r:
+        async with s.get(f"{QDRANT_URL}/collections/{COLLECTION}", headers=QDRANT_AUTH) as r:
             data = await r.json()
             final_count = data.get("result", {}).get("points_count", "?")
             print(f"\n  📦 Pontos na coleção: {final_count}")

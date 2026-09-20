@@ -49,6 +49,9 @@ from hermes_env import logs_dir
 # ─── Config ──────────────────────────────────────────────────────────────────
 QDRANT_URL = "http://localhost:6333"
 COLLECTION = "knowledge_base"
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+QDRANT_AUTH = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+
 BATCH_SIZE = 200
 SCROLL_LIMIT = 200
 LOG_FILE = logs_dir() / "decay_scanner.log"
@@ -88,7 +91,7 @@ def scroll_all() -> list[dict]:
         req = Request(
             f"{QDRANT_URL}/collections/{COLLECTION}/points/scroll",
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **QDRANT_AUTH},
         )
         try:
             with urlopen(req, timeout=30) as resp:
@@ -168,7 +171,7 @@ def upsert_batch(point_ids: list[str], payload: dict) -> bool:
     req = Request(
         f"{QDRANT_URL}/collections/{COLLECTION}/points/payload",
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **QDRANT_AUTH},
     )
     try:
         with urlopen(req, timeout=30) as resp:

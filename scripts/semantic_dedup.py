@@ -36,6 +36,9 @@ from hermes_env import hermes_home, logs_dir
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.environ.get("QDRANT_COLLECTION", os.environ.get("COLLECTION_NAME", "knowledge_base"))
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+QDRANT_AUTH = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+
 SCROLL_LIMIT = 50  # paginação Qdrant (evita timeout em coleções grandes)
 SIMILARITY_THRESHOLD = 0.92
 TOP_NEIGHBORS = 10
@@ -84,7 +87,7 @@ def scroll_all_chunks(collection: str) -> List[Dict]:
         try:
             resp = requests.post(
                 f"{QDRANT_URL}/collections/{collection}/points/scroll",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **QDRANT_AUTH},
                 json=payload,
                 timeout=30,
             )

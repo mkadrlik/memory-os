@@ -93,7 +93,7 @@ async def main(mod, targets):
             else:
                 FALHAS.append(f"upsert: {p}")
                 print(f"  ⚠️  {p.name}")
-        async with s.get(f"{mod.QDRANT_URL}/collections/{mod.COLLECTION}") as r:
+        async with s.get(f"{mod.QDRANT_URL}/collections/{mod.COLLECTION}", headers=mod.QDRANT_AUTH) as r:
             total = (await r.json()).get("result", {}).get("points_count", "?")
     print(f"\nreingestados: {FEITOS} | falhas: {len(FALHAS)} | total na coleção: {total}")
     for f in FALHAS:
