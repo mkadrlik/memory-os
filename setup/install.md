@@ -479,11 +479,22 @@ after backing up what you want to keep:
 docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down -v
 rm -rf ~/.hermes/vault            # wiki + fabric
 rm -f  ~/.hermes/state.db ~/.hermes/memory_store.db
+rm -f  ~/.hermes/icarus-capture.sqlite3   # capture ledger + daily budget
+rm -f  ~/.hermes/wiki_ingest_state.json ~/.hermes/wiki_ingest_failures.json
 ```
 
 Those databases also hold the host agent's own session history and facts, so
 delete them only if you really mean it. Qdrant vectors live in the named volume
 `memory-os-default_qdrant_data`, removed by `down -v`.
+
+`icarus-capture.sqlite3` is what Icarus uses to remember which turns it already
+captured and how much of today's automatic budget is spent. Leaving it behind
+after a data wipe means a reinstalled agent can start the day already at its cap
+and silently skip captures — observed on the acceptance guest, where the ledger
+still held the previous round's rows (`empty_or_unavailable` ×7, `processed` ×2)
+after a full teardown and a fresh install. The ingest checkpoint and DLQ files are
+the same kind of state for the wiki watcher: keep them if you want it to remember
+what it already indexed, delete them for a genuinely clean slate.
 
 ## What to expect
 
