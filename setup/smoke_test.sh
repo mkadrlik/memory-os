@@ -58,6 +58,38 @@ check() {
 }
 
 # ── Resolve env vars ─────────────────────────────────────────────────────────
+# The profile directory is not always ~/.hermes (named profiles live under
+# <root>/profiles/<name>), so honour HERMES_HOME instead of assuming the default.
+HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
+
+# Pick up the connection and embedding settings from the files setup.sh writes
+# (the Compose env file, then the profile .env), so the checks work without the
+# operator exporting them by hand. Values already in the environment always win.
+# Without this the Redis check failed with NOAUTH on an installer-created stack
+# — the password lives in the Compose env file.
+_load_profile_env() {
+    local file="$1" line key val
+    [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in \#*|"") continue ;; esac
+        key="${line%%=*}"; val="${line#*=}"
+        case "$key" in
+            REDIS_PASSWORD|QDRANT_API_KEY|COLLECTION_NAME|\
+            EMBEDDING_API_BASE|EMBEDDING_MODEL|EMBEDDING_DIMS|EMBEDDING_API_KEY)
+                if [ -z "$(printenv "$key" || true)" ]; then export "$key=$val"; fi
+                ;;
+            REDIS_HOST_PORT)
+                if [ -z "$(printenv REDIS_PORT || true)" ]; then export "REDIS_PORT=$val"; fi
+                ;;
+            QDRANT_HOST_PORT)
+                if [ -z "$(printenv QDRANT_PORT || true)" ]; then export "QDRANT_PORT=$val"; fi
+                ;;
+        esac
+    done < "$file"
+}
+_load_profile_env "${HERMES_HOME}/memory-os-compose.env"
+_load_profile_env "${HERMES_HOME}/.env"
+
 REDIS_HOST="${REDIS_HOST:-localhost}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-}"
@@ -65,31 +97,7 @@ QDRANT_HOST="${QDRANT_HOST:-localhost}"
 QDRANT_PORT="${QDRANT_PORT:-6333}"
 QDRANT_API_KEY="${QDRANT_API_KEY:-}"
 COLLECTION_NAME="${COLLECTION_NAME:-knowledge_base}"
-# The profile directory is not always ~/.hermes (named profiles live under
-# <root>/profiles/<name>), so honour HERMES_HOME instead of assuming the default.
-HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 EMBEDDING_DIMS="${EMBEDDING_DIMS:-4096}"
-
-# Pick up embedding settings from the files setup.sh writes, so the embedding
-# check works without the operator exporting them by hand. Values already in the
-# environment always win.
-_load_embedding_env() {
-    local file="$1" line key val
-    [ -f "$file" ] || return 0
-    while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in \#*|"") continue ;; esac
-        key="${line%%=*}"; val="${line#*=}"
-        case "$key" in
-            EMBEDDING_API_BASE|EMBEDDING_MODEL|EMBEDDING_DIMS|EMBEDDING_API_KEY|COLLECTION_NAME)
-                if [ -z "$(printenv "$key" || true)" ]; then export "$key=$val"; fi
-                ;;
-        esac
-    done < "$file"
-}
-_load_embedding_env "${HERMES_HOME}/memory-os-compose.env"
-_load_embedding_env "${HERMES_HOME}/.env"
-EMBEDDING_DIMS="${EMBEDDING_DIMS:-4096}"
-COLLECTION_NAME="${COLLECTION_NAME:-knowledge_base}"
 
 echo "=== Memory OS Smoke Test ==="
 echo "  Redis:  ${REDIS_HOST}:${REDIS_PORT}"
