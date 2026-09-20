@@ -117,10 +117,26 @@ check "Icarus plugin installed" \
 check "Icarus plugin loaded" \
     "hermes plugins show icarus 2>/dev/null | grep -q 'Status: enabled'"
 
-# ── 3. Embedding ─────────────────────────────────────────────────────────────
+# ── 3. Ingestion pipeline ────────────────────────────────────────────────────
+# Runs before the embedding check: that check reads a stored vector, and on a
+# fresh install the collection is empty until something has been ingested.
+echo ""
+echo "── Ingestion Pipeline ──"
+
+if [ "$QUICK_MODE" = true ]; then
+    echo "  (skipped — --quick mode)"
+else
+    check "End-to-end ingestion" \
+        "python3 scripts/test_ingestion.py"
+fi
+
+# ── 4. Embedding ─────────────────────────────────────────────────────────────
 echo ""
 echo "── Embedding ──"
 
+if [ "$QUICK_MODE" = true ]; then
+    echo "  (skipped — --quick mode; nothing ingested yet)"
+else
 check "Embedding produces ${EMBEDDING_DIMS}d vectors" \
     "python3 << 'PYEOF'
 from qdrant_client import QdrantClient
@@ -131,16 +147,6 @@ assert len(points) > 0, 'no points found in collection'
 assert len(points[0].vector['dense']) == ${EMBEDDING_DIMS}, \\
     f'expected ${EMBEDDING_DIMS} dims, got {len(points[0].vector[\"dense\"])}'
 PYEOF"
-
-# ── 4. Ingestion pipeline ────────────────────────────────────────────────────
-echo ""
-echo "── Ingestion Pipeline ──"
-
-if [ "$QUICK_MODE" = true ]; then
-    echo "  (skipped — --quick mode)"
-else
-    check "End-to-end ingestion" \
-        "python3 scripts/test_ingestion.py"
 fi
 
 # ── 5. Cron jobs ─────────────────────────────────────────────────────────────
@@ -158,7 +164,7 @@ check "Scheduled ingestion active (cron or timers)" \
 echo ""
 echo "──────────────────────────────────────────"
 if [ "$QUICK_MODE" = true ]; then
-    echo "Result (quick mode): $PASS passed, $FAIL failed, 1 skipped"
+    echo "Result (quick mode): $PASS passed, $FAIL failed, 2 skipped (ingestion, embedding)"
 else
     echo "Result: $PASS passed, $FAIL failed"
 fi

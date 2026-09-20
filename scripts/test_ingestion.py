@@ -52,9 +52,47 @@ COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "knowledge_base")
 EMBEDDING_DIMS = int(os.environ.get("EMBEDDING_DIMS", "4096"))
 
 REPO_DIR = Path(__file__).resolve().parents[1]
-WIKI_HOST_PATH = Path(
-    os.environ.get("WIKI_HOST_PATH") or (REPO_DIR / "docker" / "wiki")
-).expanduser()
+
+
+def _env_file_value(path: Path, key: str):
+    """Return KEY's value from a simple dotenv file, or None. Prints nothing."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = line.strip()
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
+
+def _resolve_wiki_host_path() -> Path:
+    """Resolve the host directory the worker's wiki is mounted from.
+
+    Order: an explicit WIKI_HOST_PATH, then MEMORY_OS_WIKI_PATH from the Compose
+    env file setup.sh writes, then WIKI_ROOT from the Hermes profile .env, and
+    finally the by-hand layout default (<repo>/docker/wiki).
+
+    Without this the check only worked for a stack started by hand from docker/
+    with its relative ./wiki and failed on an installer-created stack, whose
+    wiki lives under the profile (MEMORY_OS_WIKI_PATH), telling the operator to
+    set WIKI_HOST_PATH by hand.
+    """
+    explicit = os.environ.get("WIKI_HOST_PATH")
+    if explicit:
+        return Path(explicit).expanduser()
+
+    hermes_home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()
+    value = _env_file_value(hermes_home / "memory-os-compose.env", "MEMORY_OS_WIKI_PATH")
+    if not value:
+        value = _env_file_value(hermes_home / ".env", "WIKI_ROOT")
+    if value:
+        return Path(value).expanduser()
+    return REPO_DIR / "docker" / "wiki"
+
+
+WIKI_HOST_PATH = _resolve_wiki_host_path()
 WIKI_CONTAINER_PATH = os.environ.get("WIKI_CONTAINER_PATH", "/wiki").rstrip("/")
 
 TIMEOUT = 90  # seconds for ARQ job completion
