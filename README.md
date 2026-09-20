@@ -23,7 +23,7 @@ Memory OS turns Hermes Agent into a real long-term collaborator — one that rem
 
 **20+ fixes from systematic audit.** Community-driven review across setup, configuration, performance, and resilience. Highlights: provider-agnostic LLM extraction, O(1) path lookups, FTS5-powered session search, semantic dedup at scale, and idempotent database initialization.
 
-**Installation verified on real hardware.** Smoke tests and ingestion tests ship with the repo. The automated installer has been tested end-to-end — including on modest machines where Docker build times exposed UX gaps that are now handled gracefully.
+**Installation verified on real hardware.** Smoke tests (`setup/smoke_test.sh`) and an end-to-end ingestion test (`scripts/test_ingestion.py`) ship with the repo and are meant to be run against your own stack. This consolidation additionally ships a deterministic acceptance harness — the offline suites plus a real Redis/Qdrant/worker stack exercised behind a local fake provider — recorded in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md). The one-command installer has **not** been run end-to-end on a clean machine in this consolidation; that check is listed as pending in [docs/CONSOLIDATION.md](docs/CONSOLIDATION.md).
 
 ---
 

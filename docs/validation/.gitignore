@@ -1,0 +1,6 @@
+# Raw run artifacts stay out of git.
+# Only hand-written, redacted summaries are committed in this directory.
+*
+!.gitignore
+!README.md
+!*.summary.md

@@ -21,7 +21,7 @@ PR links: [#31](https://github.com/ClaudioDrews/memory-os/pull/31), [#35](https:
 ## Behavioral changes
 
 - Reflection verdicts require an actual boolean, known severity and nonempty explanation. Batch reflection requires arrays of strings. Braces inside quoted JSON strings are handled by the JSON decoder.
-- Contradictions set `contradiction_unresolved`; later consistent verdicts cannot erase that state or restore confidence automatically. Resolving contradictions is a separate explicit operation; no automatic clearing tool is introduced.
+- Contradictions set `contradiction_unresolved`; later consistent verdicts cannot erase that state or restore confidence automatically. The explicit `scripts/resolve_contradiction.py` operation records the actor, justification and prior reflection metadata, clears the flag and legacy note marker, and resets the reflection count to zero. It preserves confidence and existing resolution history. See the scripts README for preview/apply usage and concurrency requirements.
 - Chunk selection paginates and prioritizes unseen points, includes missing counters, excludes archived points, and stops revisiting points at the configured historical ceiling of three reflections.
 - `LLM_BACKEND=ollama` is the backward-compatible default. OpenRouter requires explicit selection and a key. Providing an embedding key alone never silently switches the reflection provider.
 - Ingestion checkpoints advance only after a successful worker status. Set `WORKER_WIKI_ROOT=/wiki` for Docker, or to the actual absolute wiki path for native workers. Redis address/port and profile state files are configurable.
@@ -48,7 +48,13 @@ A ResourceWarning was observed inside the installed qdrant-client local collecti
 
 ## Remaining release checks
 
-- No fresh Docker image build/start, native daemon start, paid-provider evaluation, reboot test or live Hermes conversation was performed. Those require network/runtime access and belong to an isolated staging deployment. Compose parsing is not a Docker installation test.
+- No fresh Docker image build/start, native daemon start, paid-provider evaluation, reboot test or live Hermes conversation was performed **in the original consolidation**. Compose parsing is not a Docker installation test.
+
+  **Status update (2026-09-20 acceptance run).** Partially addressed, and what remains is stated here instead of being claimed as done:
+  - a real image build and a real Redis + Qdrant + worker stack **were** exercised, behind a local fake LLM/embedding server, on an `internal: true` network (no egress). Ingestion through the queue, micro-reflection (contradiction, freeze, abstention and JSON repair), batch reflection and the explicit resolver (preview, apply, persistence across restart) were exercised with synthetic data;
+  - the dedup search, five other direct-Qdrant scripts, the Qdrant client version range and the Redis healthcheck were fixed as a result (see the commit log);
+  - **still not performed:** clean-machine installation through the one-command installer, VM reboot, paid-provider evaluation, and a live Hermes conversation. Those need a disposable VM and a provider budget, and are the remaining blockers for a release recommendation.
+  - the file-ingestion path requires the BM25 model (`Qdrant/bm25`), downloaded on first use by FastEmbed. Without it the ingestion job fails; there is no dense-only fallback on this path. Treat it as a documented runtime dependency.
 - Validate the exact target Hermes version and hook timing before deployment. Legacy hook helpers remain in the code for compatibility/tests; the plugin registers the new lifecycle adapter.
 - Check real Ollama/OpenRouter response shapes, budget accounting under concurrent jobs, and query latency with a cold local embedding model. Reflection budget accounting remains the existing SQLite design; this consolidation does not claim a distributed quota guarantee.
 - The local FTS/Qdrant mode is opt-in CLI functionality, not automatically substituted into Icarus. Its index is separate and rebuildable; it is not the lost original collection.
