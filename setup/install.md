@@ -145,7 +145,7 @@ EOF
 docker compose up -d
 ```
 
-Verify all three services are running:
+Verify all three services are running (run from the same `docker/` directory as the block above — a bare `docker compose` from the repository root will not find the file):
 
 ```bash
 docker compose ps
@@ -183,6 +183,30 @@ The collection is created with `EMBEDDING_DIMS` dimensions on first start; if yo
 change the model afterwards, recreate the collection (see Troubleshooting).
 `host.docker.internal` resolves on Docker Desktop, and on Linux because the
 Compose file maps it to the host gateway.
+
+> ⚠️ **A local Ollama listens on `127.0.0.1` only, which the worker cannot
+> reach.** Inside the container `127.0.0.1` is the container itself, so the
+> worker's embedding calls fail with `Connection refused` (error code 111) and
+> ingestion silently produces no vectors. Make Ollama listen on an address the
+> Docker bridge can reach:
+>
+> ```bash
+> sudo systemctl edit ollama
+> # [Service]
+> # Environment="OLLAMA_HOST=0.0.0.0:11434"
+> sudo systemctl restart ollama
+> ```
+>
+> Prefer the bridge address (`OLLAMA_HOST=172.17.0.1:11434`) over `0.0.0.0` when
+> the machine is not otherwise firewalled — `0.0.0.0` exposes the model endpoint
+> to your whole network. Verify reachability from inside the worker before
+> relying on ingestion:
+>
+> ```bash
+> docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default exec worker \
+>   python -c "import socket;s=socket.socket();s.settimeout(3);print(s.connect_ex(('host.docker.internal',11434)))"
+> # → 0 = reachable; 111 = connection refused (Ollama still on 127.0.0.1)
+> ```
 
 Add to your Hermes profile `.env` (e.g. `~/.hermes/.env`):
 
@@ -404,14 +428,20 @@ hermes gateway restart
 
 **Stop the stack, keep the data** (named volumes survive):
 
+Run these from the **repository root** — the compose file lives in `docker/`,
+so it must be named explicitly (same `-f`/`--env-file`/`-p` triple `setup.sh`
+uses). `docker compose` does not search subdirectories, so a bare
+`docker compose down` from the repository root fails with
+`no configuration file provided: not found`.
+
 ```bash
-docker compose --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
+docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
 ```
 
 **Remove the software, keep the data:**
 
 ```bash
-docker compose --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
+docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
 rm -rf ~/.hermes/plugins/icarus ~/.hermes/scripts/context_enhancer.py
 crontab -l | grep -v "memory-os wiki watcher" | crontab -
 ```
@@ -420,7 +450,7 @@ crontab -l | grep -v "memory-os wiki watcher" | crontab -
 after backing up what you want to keep:
 
 ```bash
-docker compose --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down -v
+docker compose -f docker/docker-compose.yml --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down -v
 rm -rf ~/.hermes/vault            # wiki + fabric
 rm -f  ~/.hermes/state.db ~/.hermes/memory_store.db
 ```
@@ -463,3 +493,21 @@ collections you may see (e.g., from other Hermes agent plugins or standalone
 agents) are safe to coexist — Qdrant isolates each collection at the storage
 and query level. Do NOT delete collections you did not create — they may
 belong to other agents sharing the same Qdrant instance.
+
+### Ingestion reports success but the collection stays at 0 points
+
+The worker accepted the job but the embedding call failed. On a clean install
+this is almost always the local-Ollama bind address: Ollama listens on
+`127.0.0.1` only and the worker cannot reach it (see the warning in section 5).
+Check the worker log for `Connection refused`, fix `OLLAMA_HOST`, and re-run the
+watcher (`scripts/wiki_continuous_ingest.py`).
+
+### `rm -rf ~/.hermes/vault` fails with "Permission denied" after a reinstall
+
+The Docker daemon creates the *source* of a bind mount as `root` when the path
+does not exist yet. So if you removed `~/.hermes/vault` (the "remove the data
+too" step), then started the stack again, Docker re-created `vault/`,
+`vault/wiki/` and `vault/fabric/` owned by `root`. The documented cleanup then
+fails for your user. Either remove them with `sudo rm -rf ~/.hermes/vault`, or
+re-run `bash setup.sh` (which re-creates them owned by you) before deactivating
+again. Do not start the stack between "remove the data" and the next install.
