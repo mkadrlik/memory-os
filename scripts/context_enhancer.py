@@ -282,10 +282,20 @@ def embed_query_sparse(text: str) -> Optional[Tuple[List[int], List[float]]]:
     Generate sparse BM25 embedding via FastEmbed (subprocess in ai-lab venv).
     Query text passes via stdin — never embedded in a -c code string.
     Fail-open: if it fails, return None. Caller falls back to dense-only.
+
+    The resolved ``FASTEMBED_SITEPKGS`` is exported to the child explicitly.
+    The child reads it with ``os.environ[...]``, so leaving it unset (the normal
+    case — nothing in the installer sets it) made the child die with KeyError
+    and an empty stdout, which surfaced only as "Expecting value: line 1 column
+    1" here. The effect was silent: every query fell back to dense-only and
+    hybrid (BM25) retrieval never ran, on any install that did not export the
+    variable by hand.
     """
     if not SPARSE_QUERY_ENABLED:
         return None
     try:
+        child_env = dict(os.environ)
+        child_env["FASTEMBED_SITEPKGS"] = _FASTEMBED_SITEPKGS
         result = subprocess.run(
             [_FASTEMBED_PYTHON, "-c", """\
 import os, sys, json
@@ -297,8 +307,16 @@ sparse = list(model.embed([query]))[0]
 print(json.dumps({"indices": sparse.indices.tolist(), "values": sparse.values.tolist()}))
 """],
             input=text,
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=15, env=child_env
         )
+        if result.returncode != 0 or not result.stdout.strip():
+            # Surface the child's own diagnostics instead of a bare JSON error:
+            # without this the only symptom is "Expecting value: line 1 column 1".
+            detail = (result.stderr or "").strip().splitlines()
+            raise RuntimeError(
+                f"sparse embedding subprocess failed (rc={result.returncode}): "
+                f"{detail[-1] if detail else 'no output'}"
+            )
         data = json.loads(result.stdout.strip())
         return data["indices"], data["values"]
     except Exception as e:

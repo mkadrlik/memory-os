@@ -542,7 +542,15 @@ else
 fi
 add_env "ICARUS_EXTRACTION_MAX_TOKENS" "4096"
 add_env "ICARUS_EXTRACTION_MODEL" "deepseek/deepseek-v4-flash"
-add_env "EMBEDDING_API_BASE" "${EMBEDDING_API_BASE}"
+# `host.docker.internal` is a Docker-only name: it resolves inside the worker
+# container (via extra_hosts), but NOT on the host, where the Hermes gateway and
+# the Icarus hook run scripts/context_enhancer.py. Writing it into the profile
+# .env made the host-side retrieval path fail to embed — dense and sparse both
+# errored, every query degraded to lexical fallback, and hybrid (BM25) retrieval
+# never ran. The Compose env file keeps the container-facing value; the profile
+# .env gets the host-reachable one.
+host_reachable() { printf '%s' "${1//host.docker.internal/127.0.0.1}"; }
+add_env "EMBEDDING_API_BASE" "$(host_reachable "${EMBEDDING_API_BASE}")"
 add_env "EMBEDDING_MODEL" "${EMBEDDING_MODEL}"
 add_env "EMBEDDING_API_KEY" "${EMBEDDING_API_KEY}"
 add_env "EMBEDDING_REQUEST_TIMEOUT" "30"
@@ -550,7 +558,7 @@ add_env "EMBEDDING_REQUEST_RETRIES" "1"
 add_env "EMBEDDING_DIMS" "${EMBEDDING_DIMS}"
 add_env "COLLECTION_NAME" "${COLLECTION_NAME}"
 add_env "LLM_BACKEND" "${LLM_BACKEND}"
-add_env "OLLAMA_BASE_URL" "${OLLAMA_BASE_URL}"
+add_env "OLLAMA_BASE_URL" "$(host_reachable "${OLLAMA_BASE_URL}")"
 add_env "OLLAMA_MODEL" "${OLLAMA_MODEL}"
 add_env "HERMES_AGENT_NAME" "${PROFILE_NAME:-hermes}"
 add_env "QDRANT_URL" "http://127.0.0.1:${QDRANT_HOST_PORT}"
