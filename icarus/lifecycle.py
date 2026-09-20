@@ -109,7 +109,16 @@ def on_session_end(session_id='', interrupted=False, **kwargs):
                                   source_session_id=session_id, automatic=True, status='completed')
             status = 'processed' if entries else 'empty_or_unavailable'
         except Exception as exc:
-            log.warning('Icarus capture failed: %s', type(exc).__name__)
-            status = 'failed'
+            if 'budget' in str(exc).lower():
+                # The daily automatic-capture budget is a deliberate stop, not a
+                # transient error: reporting it as 'failed' hides the fact that
+                # every later turn today will also be dropped.
+                log.warning('Icarus capture skipped: %s — turn recorded as '
+                            'budget_reached; raise ICARUS_MAX_DAILY_ENTRIES '
+                            '(default 12) to capture more today', exc)
+                status = 'budget_reached'
+            else:
+                log.warning('Icarus capture failed: %s: %s', type(exc).__name__, exc)
+                status = 'failed'
         with contextlib.closing(sqlite3.connect(home / 'icarus-capture.sqlite3', timeout=30)) as con, con:
             con.execute('UPDATE turns SET status=? WHERE session=? AND turn=?', (status, session_id, turn))

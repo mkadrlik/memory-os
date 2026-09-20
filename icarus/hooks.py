@@ -51,7 +51,12 @@ _ICARUS_ENDPOINT = os.environ.get("ICARUS_ENDPOINT", "").strip().rstrip("/")
 _ICARUS_API_KEY_ENV = os.environ.get("ICARUS_API_KEY_ENV", "").strip()
 
 _EXTRACTION_MODEL = os.environ.get("ICARUS_EXTRACTION_MODEL", "deepseek/deepseek-v4-flash")
-_EXTRACTION_MAX_TOKENS = int(os.environ.get("ICARUS_EXTRACTION_MAX_TOKENS", "1024"))
+# Default matches the value setup/install.md marks "strongly recommended".  The
+# documented default extraction model is a reasoning model, and reasoning tokens
+# are charged against this budget: at 1024 the JSON reply is often cut off
+# mid-array (`finish_reason=length`), the parse fails, and capture silently
+# writes nothing.
+_EXTRACTION_MAX_TOKENS = int(os.environ.get("ICARUS_EXTRACTION_MAX_TOKENS", "4096"))
 _MEMORY_DEGRADED_WARNING = os.environ.get(
     "ICARUS_MEMORY_DEGRADED_WARNING",
     "⚠️ Semantic Wiki search is temporarily unavailable; this response may use incomplete context.",
@@ -1109,7 +1114,17 @@ def _llm_extract_entries(transcript):
         )
         resp = urllib.request.urlopen(req, timeout=45)
         body = json.loads(resp.read().decode("utf-8"))
-        raw = body["choices"][0]["message"]["content"]
+        choice = body["choices"][0]
+        raw = choice["message"]["content"]
+
+        # A reply cut off by the token budget cannot be parsed, and the caller
+        # only sees "no entries". Say why, and how to fix it.
+        if (choice.get("finish_reason") or "") == "length":
+            logger.warning(
+                "icarus: extraction reply truncated (finish_reason=length, "
+                "max_tokens=%s) — nothing will be captured for this turn; raise "
+                "ICARUS_EXTRACTION_MAX_TOKENS for this model (reasoning tokens "
+                "count against it)", _EXTRACTION_MAX_TOKENS)
 
         # Parse JSON from response (robust — handles markdown fences, null)
         if raw is None:
@@ -1151,6 +1166,15 @@ def _llm_extract_entries(transcript):
                 "content": content[:2000],
                 "training_value": entry.get("training_value", "normal")
             })
+
+        # A model that answers with a different JSON shape (e.g. key/value pairs
+        # instead of type/summary/content) is filtered out here; without this
+        # line the caller only sees an empty list and the capture looks "empty".
+        if extracted and not valid:
+            logger.warning(
+                "icarus: extraction returned %d entry/entries, all rejected by "
+                "validation (need type in %s, summary >= 10 chars, content >= 60 "
+                "chars) — nothing captured", len(extracted), sorted(allowed_types))
 
         return valid
 

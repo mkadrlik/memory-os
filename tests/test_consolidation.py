@@ -140,6 +140,35 @@ class LlmTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(llm.httpx,'AsyncClient',return_value=cm):await llm._openrouter_chat('prompt',10,True)
         self.assertIn('response_format',sent[0]);self.assertNotIn('response_format',sent[1]);self.assertEqual(len(sent),2)
 
+class ExtractionTests(unittest.TestCase):
+    """The extraction reply must be diagnosable when it yields no entries."""
+
+    def _call(self,body,logs):
+        class Resp:
+            def read(self_inner): return json.dumps(body).encode()
+        with patch.object(hooks.urllib.request,'urlopen',return_value=Resp()),\
+             patch.object(hooks,'_resolve_llm_api_key',return_value='test-key'),\
+             self.assertLogs('icarus.hooks',level='WARNING') as captured:
+            result=hooks._llm_extract_entries('User:\nrequest\nAssistant:\nanswer')
+        logs.extend(captured.output)
+        return result
+
+    def test_truncated_reply_is_reported(self):
+        body={'choices':[{'message':{'content':'[{"type": "note", "summ'},'finish_reason':'length'}]}
+        logs=[]
+        self.assertEqual(self._call(body,logs),[])
+        self.assertTrue(any('truncated' in m for m in logs),logs)
+
+    def test_reply_with_wrong_shape_is_reported(self):
+        body={'choices':[{'message':{'content':json.dumps([{'category':'x','value':'y'}])},'finish_reason':'stop'}]}
+        logs=[]
+        self.assertEqual(self._call(body,logs),[])
+        self.assertTrue(any('all rejected' in m for m in logs),logs)
+
+    def test_extraction_budget_covers_reasoning_models(self):
+        self.assertGreaterEqual(hooks._EXTRACTION_MAX_TOKENS,4096)
+
+
 class ProfileTests(unittest.TestCase):
     def test_missing_profile_db_never_reads_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,6 +222,20 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual(a,b)
             with self.assertRaises(RuntimeError):state.write_entry('note','different content','second',automatic=True)
             self.assertTrue(state.write_entry('note','manual content','manual'))
+
+    def _captured_status(self,exc):
+        entry=[{'type':'note','content':'x'*80,'summary':'y'*20}]
+        with patch.object(hooks,'_llm_extract_entries',return_value=entry),\
+             patch.object(state,'write_entry',side_effect=exc):
+            self.turn('alice')
+        return sqlite3.connect(self.home/'icarus-capture.sqlite3').execute('select status from turns').fetchone()[0]
+
+    def test_daily_budget_is_reported_not_hidden(self):
+        # A deliberate budget stop must not be indistinguishable from a failure.
+        self.assertEqual(self._captured_status(RuntimeError('Daily automatic capture budget reached')),'budget_reached')
+
+    def test_other_capture_errors_stay_failed(self):
+        self.assertEqual(self._captured_status(RuntimeError('Event loop is closed')),'failed')
 
     def test_recall_gate_is_per_session(self):
         item={'id':'item','summary':'backups on Tuesday','agent':'test'}
