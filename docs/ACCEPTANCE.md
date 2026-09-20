@@ -39,7 +39,7 @@ for in the installation test; the candidate tree is authoritative.
 | # | environment | purpose | status |
 |---|---|---|---|
 | E1 | Omarchy + dedicated venv | syntax, offline suites, compose parsing, dedup regression | available |
-| E2 | ThinkPad lab (dedicated Compose project) | real Redis/Qdrant/worker + local fake LLM/embedding server | available |
+| E2 | ThinkPad lab (dedicated Compose project) | real Redis/Qdrant/worker + local fake LLM/embedding server | available; stopped between uses (`stop`, never `down -v`), credentials only in the lab's own env file outside this repository |
 | E3 | Disposable VM, clean OS image | clean install through the documented path, reboot, Hermes integration | **blocked — see below** |
 | E4 | Real provider (paid) | memory utility comparison | **blocked — needs budget authorization** |
 
@@ -106,6 +106,7 @@ A container restart is **not** an acceptable substitute for the VM reboot test.
 ### Phase 8 / 9 / 10 — product, docs, commit, delivery
 - [ ] main path documented (requirements, install, provider config, first example, how to inspect what was remembered, how to opt out, conflict handling, backup/recovery/disable, costs)
 - [ ] reproducible synthetic example: a decision recorded in one session and recalled in another
+  - exercised on 2026-09-20 inside the lab network through the real path (enqueue → worker → Qdrant, retrieval through `context_enhancer` in a separate process): recall recovered, cleanup verified, no default target, checks scoped to the run — `docs/validation/phase2-example.summary.md`. With the lab's fake provider the ranking is arbitrary, so this demonstrates the plumbing, not semantic recall quality; the latter still needs the VM/provider phase.
 - [ ] README, QUICKSTART, install guide, CONSOLIDATION, migration notes consistent
 - [ ] limitations documented where appropriate; no hidden failure
 - [ ] validation tests/tools preserved in the repo, no private data
