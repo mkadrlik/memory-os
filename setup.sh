@@ -194,19 +194,30 @@ elif command -v uv >/dev/null 2>&1; then
 fi
 
 install_requirements() {
-    # $1 = interpreter, $2 = label, $3 = extra flags (system interpreters only)
-    local py="$1" label="$2" extra="${3:-}"
+    # $1 = interpreter, $2 = label, $3 = "system" for a non-venv interpreter
+    local py="$1" label="$2" kind="${3:-venv}"
     [ -x "${py}" ] || return 2
     if [ -n "${UV_BIN}" ]; then
-        # shellcheck disable=SC2086
-        if "${UV_BIN}" pip install --quiet ${extra} --python "${py}" -r "${REQ_FILE}" 2>&1 | tail -2; then
+        if [ "${kind}" = "system" ]; then
+            # uv has no --user: install into this interpreter's user site
+            # directory, which is on its sys.path and needs no privileges.
+            local usersite usersite_cmd='import site; print(site.getusersitepackages())'
+            usersite="$("${py}" -c "${usersite_cmd}" 2>/dev/null || true)"
+            if [ -n "${usersite}" ] && \
+               "${UV_BIN}" pip install --quiet --target "${usersite}" --python "${py}" -r "${REQ_FILE}" 2>&1 | tail -2; then
+                ok "Python dependencies installed for ${label} (uv --target)"
+                return 0
+            fi
+        elif "${UV_BIN}" pip install --quiet --python "${py}" -r "${REQ_FILE}" 2>&1 | tail -2; then
             ok "Python dependencies installed for ${label} (uv)"
             return 0
         fi
     fi
     if "${py}" -m pip --version >/dev/null 2>&1; then
-        # shellcheck disable=SC2086
-        if "${py}" -m pip install --quiet ${extra} -r "${REQ_FILE}" 2>&1 | tail -2; then
+        # --user keeps the system environment clean; --break-system-packages is
+        # what a PEP 668 ("externally managed") interpreter requires.
+        if "${py}" -m pip install --quiet --user --break-system-packages -r "${REQ_FILE}" 2>&1 | tail -2 \
+           || "${py}" -m pip install --quiet --break-system-packages -r "${REQ_FILE}" 2>&1 | tail -2; then
             ok "Python dependencies installed for ${label} (pip)"
             return 0
         fi
@@ -220,7 +231,7 @@ install_requirements() {
 #     context enhancer, so it needs the same dependencies.
 DEPS_MISSING=0
 SYSTEM_PY="$(command -v python3 || true)"
-if install_requirements "${SYSTEM_PY}" "system python3 (scheduled scripts)" "--break-system-packages"; then
+if install_requirements "${SYSTEM_PY}" "system python3 (scheduled scripts)" "system"; then
     :
 else
     fail "Could not install dependencies for ${SYSTEM_PY:-python3}"
