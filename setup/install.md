@@ -16,13 +16,32 @@
 
 ### 1. Icarus Plugin (bundled)
 
-On this Omarchy host the Principal plugin is a **symlink** into the repo, so edits here are what Hermes loads:
+A **symlink** into the repo keeps the installed plugin identical to the checkout,
+so edits here are what Hermes loads:
 
 ```bash
 ln -sfn "$(pwd)/icarus" ~/.hermes/plugins/icarus
 ```
 
 A plain copy (`cp -r icarus/ ~/.hermes/plugins/icarus/`) is the portable install; it will **not** see later repo edits until recopied.
+
+The plugin runs inside the **Hermes runtime**, which is its own virtual
+environment (`~/.hermes/hermes-agent/venv`) — not your system Python. Its
+dependencies come from `requirements.txt` and the Hermes installer ships `uv`,
+so the reliable command is:
+
+```bash
+~/.hermes/bin/uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -r requirements.txt
+```
+
+The scheduled scripts (section 8) run with the **system** `python3` from
+crontab, so they need the same requirements installed there:
+
+```bash
+python3 -m pip install --break-system-packages -r requirements.txt
+```
+
+`bash setup.sh` does both for you; these two commands are what it runs.
 
 After `hermes update`, re-apply `modifications/session_search_tool.py.diff` so `session_search(profile=...)` stays fail-closed (does not fall back to the default profile's `state.db`).
 
@@ -132,6 +151,33 @@ redis-cli -a "$REDIS_PASSWORD" ping    # → PONG
 ```
 
 ### 5. Environment Variables
+
+Two places read embedding settings, and they are different files:
+
+| Consumer | File |
+|---|---|
+| Worker/container (ingestion, reflection) | the Compose env file, `~/.hermes/memory-os-compose.env` (created by `setup.sh`; `docker/.env` if you started the stack by hand) |
+| Icarus plugin / context enhancer (query time) | the Hermes profile `.env`, e.g. `~/.hermes/.env` |
+
+Set both when you change provider, or the ingestion side and the query side will
+disagree. `bash setup.sh` copies the values it finds (environment first, then
+`~/.hermes/.env`) into the Compose env file for you.
+
+**Local embedding provider (no key):** point the worker at an OpenAI-compatible
+endpoint and make `EMBEDDING_DIMS` match the model, before the first start:
+
+```bash
+export EMBEDDING_API_BASE=http://host.docker.internal:11434/v1   # Ollama on the host
+export EMBEDDING_MODEL=nomic-embed-text
+export EMBEDDING_DIMS=768
+export EMBEDDING_API_KEY=            # not needed for a local endpoint
+bash setup.sh
+```
+
+The collection is created with `EMBEDDING_DIMS` dimensions on first start; if you
+change the model afterwards, recreate the collection (see Troubleshooting).
+`host.docker.internal` resolves on Docker Desktop, and on Linux because the
+Compose file maps it to the host gateway.
 
 Add to your Hermes profile `.env` (e.g. `~/.hermes/.env`):
 
@@ -310,7 +356,16 @@ specific Qdrant collections from automated maintenance.
 ### 9. Gateway Restart
 
 ```bash
-hermes gateway restart
+hermes gateway status     # running? as a service or manually?
+hermes gateway restart    # only meaningful if it is installed as a service
+```
+
+If `status` says *"Running manually, not as a system service"*, `restart` starts
+the gateway in the foreground and does not return — install the service once
+instead, then use `restart`:
+
+```bash
+hermes gateway install    # background service (+ starts it now)
 ```
 
 Changes to `.env`, `SOUL.md`, `rulebook.md`, and Icarus plugin code only take effect after restart.
@@ -332,6 +387,42 @@ qdrant_search("test query")
 fact_store(action='probe', entity='test')
 # → Should return empty (no facts stored yet)
 ```
+
+### 11. Disable or remove
+
+**Disable the plugin, keep all memory** (fastest way to stop injection):
+
+```bash
+# remove "icarus" from the enabled list in ~/.hermes/config.yaml
+hermes gateway restart
+```
+
+**Stop the stack, keep the data** (named volumes survive):
+
+```bash
+docker compose --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
+```
+
+**Remove the software, keep the data:**
+
+```bash
+docker compose --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down
+rm -rf ~/.hermes/plugins/icarus ~/.hermes/scripts/context_enhancer.py
+crontab -l | grep -v "memory-os wiki watcher" | crontab -
+```
+
+**Remove the data too** — this deletes what the agent remembered. Do it only
+after backing up what you want to keep:
+
+```bash
+docker compose --env-file ~/.hermes/memory-os-compose.env -p memory-os-default down -v
+rm -rf ~/.hermes/vault            # wiki + fabric
+rm -f  ~/.hermes/state.db ~/.hermes/memory_store.db
+```
+
+Those databases also hold the host agent's own session history and facts, so
+delete them only if you really mean it. Qdrant vectors live in the named volume
+`memory-os-default_qdrant_data`, removed by `down -v`.
 
 ## What to expect
 

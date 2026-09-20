@@ -175,20 +175,74 @@ fi
 # ──────────────────────────────────────────────────────────────────────────────
 banner "Phase 3: Python Dependencies"
 
-if [ -f "requirements.txt" ]; then
-    # Install in current environment (local user or venv)
-    if pip install --user -r requirements.txt --quiet 2>&1 | tail -3; then
-        ok "Python dependencies installed"
-    else
-        warn "pip install failed — trying with --break-system-packages"
-        pip install --break-system-packages -r requirements.txt --quiet 2>&1 || {
-            fail "Could not install Python dependencies"
-            exit 1
-        }
-        ok "Python dependencies installed (--break-system-packages)"
-    fi
+REQ_FILE="${REPO_DIR}/requirements.txt"
+if [ -f "${REQ_FILE}" ]; then
+    : # dependencies are installed below, into both interpreters that need them
 else
     fail "requirements.txt not found at $(pwd)"
+    exit 1
+fi
+
+# The Hermes install ships uv, which installs into any interpreter without
+# system privileges — the only route that works on a Hermes venv (it has no
+# pip) and on PEP 668 "externally managed" system pythons.
+UV_BIN=""
+if [ -x "${HERMES_HOME}/bin/uv" ]; then
+    UV_BIN="${HERMES_HOME}/bin/uv"
+elif command -v uv >/dev/null 2>&1; then
+    UV_BIN="$(command -v uv)"
+fi
+
+install_requirements() {
+    # $1 = interpreter, $2 = label, $3 = extra flags (system interpreters only)
+    local py="$1" label="$2" extra="${3:-}"
+    [ -x "${py}" ] || return 2
+    if [ -n "${UV_BIN}" ]; then
+        # shellcheck disable=SC2086
+        if "${UV_BIN}" pip install --quiet ${extra} --python "${py}" -r "${REQ_FILE}" 2>&1 | tail -2; then
+            ok "Python dependencies installed for ${label} (uv)"
+            return 0
+        fi
+    fi
+    if "${py}" -m pip --version >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        if "${py}" -m pip install --quiet ${extra} -r "${REQ_FILE}" 2>&1 | tail -2; then
+            ok "Python dependencies installed for ${label} (pip)"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Two interpreters matter, and they are not the same one:
+#   - the system python3 runs the scheduled scripts (wiki watcher, triggers);
+#   - the Hermes runtime (its own venv) imports the Icarus plugin and the
+#     context enhancer, so it needs the same dependencies.
+DEPS_MISSING=0
+SYSTEM_PY="$(command -v python3 || true)"
+if install_requirements "${SYSTEM_PY}" "system python3 (scheduled scripts)" "--break-system-packages"; then
+    :
+else
+    fail "Could not install dependencies for ${SYSTEM_PY:-python3}"
+    DEPS_MISSING=1
+fi
+
+HERMES_PY="${HERMES_HOME}/hermes-agent/venv/bin/python"
+if [ -x "${HERMES_PY}" ]; then
+    if install_requirements "${HERMES_PY}" "Hermes runtime (plugin, context enhancer)"; then
+        :
+    else
+        fail "Could not install dependencies into the Hermes runtime (${HERMES_PY})"
+        DEPS_MISSING=1
+    fi
+else
+    warn "Hermes runtime interpreter not found at ${HERMES_PY} — skipped those dependencies"
+    info "If the plugin reports missing modules, run: ${UV_BIN:-uv} pip install --python <hermes venv python> -r requirements.txt"
+fi
+
+if [ "${DEPS_MISSING}" -eq 1 ]; then
+    fail "Python dependencies are incomplete — the plugin or the scheduled scripts will fail to import"
+    info "Install uv (ships with Hermes at ${HERMES_HOME}/bin/uv) or pip (e.g. apt-get install python3-pip), then re-run this script"
     exit 1
 fi
 
@@ -275,19 +329,55 @@ fi
 
 cd "${DOCKER_DIR}"
 
+# ── Embedding / LLM provider ────────────────────────────────────────────────
+# Precedence: environment variable > value already in the profile .env > default.
+# A local or self-hosted OpenAI-compatible endpoint needs no API key at all, so
+# the key is only requested when the endpoint really is OpenRouter.
+env_value() { sed -n "s/^$1=//p" "${ENV_FILE}" 2>/dev/null | tail -1; }
+
+EMBEDDING_API_BASE="${EMBEDDING_API_BASE:-$(env_value EMBEDDING_API_BASE)}"
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-$(env_value EMBEDDING_MODEL)}"
+EMBEDDING_API_KEY="${EMBEDDING_API_KEY:-$(env_value EMBEDDING_API_KEY)}"
+EMBEDDING_DIMS="${EMBEDDING_DIMS:-$(env_value EMBEDDING_DIMS)}"
+LLM_BACKEND="${LLM_BACKEND:-$(env_value LLM_BACKEND)}"
+OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-$(env_value OLLAMA_BASE_URL)}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-$(env_value OLLAMA_MODEL)}"
+COLLECTION_NAME="${COLLECTION_NAME:-$(env_value COLLECTION_NAME)}"
+EMBEDDING_API_BASE="${EMBEDDING_API_BASE:-https://openrouter.ai/api/v1}"
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}"
+EMBEDDING_DIMS="${EMBEDDING_DIMS:-4096}"
+COLLECTION_NAME="${COLLECTION_NAME:-knowledge_base}"
+LLM_BACKEND="${LLM_BACKEND:-ollama}"
+OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-deepseek-v4-flash:cloud}"
+
 # Detect API key from Hermes .env
 OPENROUTER_KEY=""
 if [ -f "${ENV_FILE}" ]; then
     OPENROUTER_KEY=$(grep -oP '(?:OPENROUTER.*API_KEY|LLM_API_KEY)=\K.*' "${ENV_FILE}" 2>/dev/null | head -1 || true)
 fi
+OPENROUTER_KEY="${OPENROUTER_KEY:-${OPENROUTER_API_KEY:-}}"
 
-if [ -z "${OPENROUTER_KEY}" ]; then
+if [ -n "${OPENROUTER_KEY}" ]; then
+    ok "Embedding endpoint ${EMBEDDING_API_BASE} with a configured key"
+elif [ "${EMBEDDING_API_BASE#*openrouter.ai}" != "${EMBEDDING_API_BASE}" ]; then
     echo ""
-    echo -e "  ${YELLOW}Could not find an API key in Hermes .env.${NC}"
+    echo -e "  ${YELLOW}No API key found for OpenRouter, the configured embedding endpoint.${NC}"
     echo "  The worker needs an embedding-capable API key (OpenRouter or compatible)."
+    echo "  Press Enter to skip and point EMBEDDING_API_BASE at a local endpoint instead"
+    echo "  (e.g. Ollama: EMBEDDING_API_BASE=http://host.docker.internal:11434/v1 EMBEDDING_MODEL=nomic-embed-text EMBEDDING_DIMS=768)."
     echo ""
-    read -r -p "  Paste your API key (e.g. sk-or-v1-...): " OPENROUTER_KEY
+    if [ -t 0 ]; then
+        read -r -p "  Paste your API key (e.g. sk-or-v1-...), or Enter to skip: " OPENROUTER_KEY || OPENROUTER_KEY=""
+    else
+        info "Not running interactively — continuing without OpenRouter key"
+    fi
     echo ""
+    if [ -z "${OPENROUTER_KEY}" ]; then
+        warn "No embedding credential: the worker will fail until EMBEDDING_API_BASE points at a local endpoint"
+    fi
+else
+    info "Embedding endpoint ${EMBEDDING_API_BASE} — no API key required"
 fi
 
 # Generate random Redis password
@@ -305,8 +395,14 @@ REDIS_PASSWORD=${REDIS_PW}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 QDRANT_HOST_PORT=${QDRANT_HOST_PORT}
 REDIS_HOST_PORT=${REDIS_HOST_PORT}
-EMBEDDING_DIMS=4096
-COLLECTION_NAME=knowledge_base
+EMBEDDING_API_BASE=${EMBEDDING_API_BASE}
+EMBEDDING_MODEL=${EMBEDDING_MODEL}
+EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+EMBEDDING_DIMS=${EMBEDDING_DIMS}
+COLLECTION_NAME=${COLLECTION_NAME}
+LLM_BACKEND=${LLM_BACKEND}
+OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+OLLAMA_MODEL=${OLLAMA_MODEL}
 LOG_LEVEL=INFO
 MEMORY_OS_WIKI_PATH=${VAULT_PATH}/wiki
 MEMORY_OS_HERMES_HOME=${HERMES_HOME}
@@ -314,6 +410,7 @@ MEMORY_OS_FABRIC_DIR=${STACK_FABRIC}
 DOCKERENV
 
 ok "Profile-specific Compose environment created"
+info "Worker embedding: ${EMBEDDING_MODEL} @ ${EMBEDDING_API_BASE}, ${EMBEDDING_DIMS} dims, collection ${COLLECTION_NAME}"
 compose() { docker compose --env-file "${DOCKER_ENV_FILE}" -p "${COMPOSE_PROJECT_NAME}" "$@"; }
 
 # Pull pre-built images first (Redis, Qdrant) — fast
@@ -405,12 +502,16 @@ else
 fi
 add_env "ICARUS_EXTRACTION_MAX_TOKENS" "4096"
 add_env "ICARUS_EXTRACTION_MODEL" "deepseek/deepseek-v4-flash"
-add_env "EMBEDDING_API_BASE" "https://openrouter.ai/api/v1"
-add_env "EMBEDDING_MODEL" "qwen/qwen3-embedding-8b"
-add_env "EMBEDDING_API_KEY" ""
+add_env "EMBEDDING_API_BASE" "${EMBEDDING_API_BASE}"
+add_env "EMBEDDING_MODEL" "${EMBEDDING_MODEL}"
+add_env "EMBEDDING_API_KEY" "${EMBEDDING_API_KEY}"
 add_env "EMBEDDING_REQUEST_TIMEOUT" "30"
 add_env "EMBEDDING_REQUEST_RETRIES" "1"
-add_env "EMBEDDING_DIMS" "4096"
+add_env "EMBEDDING_DIMS" "${EMBEDDING_DIMS}"
+add_env "COLLECTION_NAME" "${COLLECTION_NAME}"
+add_env "LLM_BACKEND" "${LLM_BACKEND}"
+add_env "OLLAMA_BASE_URL" "${OLLAMA_BASE_URL}"
+add_env "OLLAMA_MODEL" "${OLLAMA_MODEL}"
 add_env "HERMES_AGENT_NAME" "${PROFILE_NAME:-hermes}"
 add_env "QDRANT_URL" "http://127.0.0.1:${QDRANT_HOST_PORT}"
 add_env "REDIS_HOST" "127.0.0.1"
@@ -467,14 +568,23 @@ fi
 banner "Phase 10: Gateway"
 
 if command -v hermes >/dev/null 2>&1; then
-    info "Restarting Hermes gateway..."
-    if hermes gateway restart 2>&1; then
-        ok "Gateway restarted"
+    # `hermes gateway restart` on an installation without a gateway *service*
+    # starts the gateway in the foreground and never returns, which used to hang
+    # this script before it printed its summary. Only a real service is
+    # restarted, and even that is bounded.
+    if systemctl --user list-unit-files 2>/dev/null | grep -q "^hermes-gateway"; then
+        info "Restarting the Hermes gateway service..."
+        if timeout 120 hermes gateway restart >/dev/null 2>&1; then
+            ok "Gateway restarted"
+        else
+            warn "Gateway restart failed — run: hermes gateway restart"
+        fi
     else
-        warn "Gateway restart failed — restart manually with: hermes gateway restart"
+        info "No Hermes gateway service installed — nothing to restart"
+        info "Messaging and Hermes cron need it: hermes gateway install"
     fi
 else
-    warn "'hermes' command not available — restart the gateway manually"
+    warn "'hermes' command not available — install the gateway later with: hermes gateway install"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────

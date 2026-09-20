@@ -10,6 +10,14 @@ This installs everything: Docker stack (Redis + Qdrant + Worker), Icarus plugin,
 
 **Requires:** Docker, Python 3.11+, Hermes Agent. The script auto-detects your OpenRouter key and prompts only if missing.
 
+`setup.sh` installs the Python dependencies for you, into both interpreters that
+need them: the Hermes runtime (`~/.hermes/hermes-agent/venv`, no pip of its own —
+the script uses the `uv` that ships with Hermes) and the system `python3` used by
+the scheduled scripts. No `pip` package or sudo is required for that step.
+
+No API key is required if you use a local embedding endpoint — see
+[setup/install.md](setup/install.md) section 5 for the Ollama example.
+
 > Prefer manual control? Follow [setup/install.md](setup/install.md) — step-by-step guide with validation checkpoints.
 
 ## Prerequisites
@@ -43,6 +51,9 @@ curl -s http://localhost:6333/healthz    # should return "ok"
 
 # Icarus plugin
 hermes plugins list | grep icarus
+
+# Gateway (needed for messaging and Hermes cron)
+hermes gateway status
 ```
 
 ## 4. Use

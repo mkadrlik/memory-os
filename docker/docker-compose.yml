@@ -91,6 +91,11 @@ services:
       - ${MEMORY_OS_WIKI_PATH:-./wiki}:/wiki:ro
       - ${MEMORY_OS_HERMES_HOME:-./hermes}:/hermes:rw
       - ${MEMORY_OS_FABRIC_DIR:-./fabric}:/fabric:rw
+    extra_hosts:
+      # `host.docker.internal` is the documented default for a local LLM
+      # (OLLAMA_BASE_URL) and for a local embedding endpoint. Docker Desktop
+      # resolves it automatically; on Linux it has to be mapped explicitly.
+      - "host.docker.internal:host-gateway"
     healthcheck:
       # Verifies the worker can reach Redis with auth — if this passes the ARQ
       # event loop is operational.  Overrides the Dockerfile HEALTHCHECK which
