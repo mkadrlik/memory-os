@@ -42,7 +42,13 @@ check() {
     local label="$1"
     local cmd="$2"
     printf "  %-40s " "$label"
-    if eval "$cmd" >/dev/null 2>&1; then
+    # Run each check with pipefail disabled: the verdict is the last command's
+    # status, not the producer's. With pipefail on, a `producer | grep -q`
+    # pipeline races — grep -q exits at the first match and closes the pipe, the
+    # producer dies on SIGPIPE (141), and pipefail reports a failure on a
+    # correct install. Seen on `hermes plugins show icarus | grep -q 'Status:
+    # enabled'`: the same command passed by hand and failed inside this script.
+    if ( set +o pipefail; eval "$cmd" ) >/dev/null 2>&1; then
         printf "${GREEN}✅${NC}\n"
         PASS=$((PASS + 1))
     else
@@ -63,6 +69,27 @@ COLLECTION_NAME="${COLLECTION_NAME:-knowledge_base}"
 # <root>/profiles/<name>), so honour HERMES_HOME instead of assuming the default.
 HERMES_HOME="${HERMES_HOME:-${HOME}/.hermes}"
 EMBEDDING_DIMS="${EMBEDDING_DIMS:-4096}"
+
+# Pick up embedding settings from the files setup.sh writes, so the embedding
+# check works without the operator exporting them by hand. Values already in the
+# environment always win.
+_load_embedding_env() {
+    local file="$1" line key val
+    [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in \#*|"") continue ;; esac
+        key="${line%%=*}"; val="${line#*=}"
+        case "$key" in
+            EMBEDDING_API_BASE|EMBEDDING_MODEL|EMBEDDING_DIMS|EMBEDDING_API_KEY|COLLECTION_NAME)
+                if [ -z "$(printenv "$key" || true)" ]; then export "$key=$val"; fi
+                ;;
+        esac
+    done < "$file"
+}
+_load_embedding_env "${HERMES_HOME}/memory-os-compose.env"
+_load_embedding_env "${HERMES_HOME}/.env"
+EMBEDDING_DIMS="${EMBEDDING_DIMS:-4096}"
+COLLECTION_NAME="${COLLECTION_NAME:-knowledge_base}"
 
 echo "=== Memory OS Smoke Test ==="
 echo "  Redis:  ${REDIS_HOST}:${REDIS_PORT}"
@@ -134,20 +161,31 @@ fi
 echo ""
 echo "── Embedding ──"
 
-if [ "$QUICK_MODE" = true ]; then
-    echo "  (skipped — --quick mode; nothing ingested yet)"
-else
-check "Embedding produces ${EMBEDDING_DIMS}d vectors" \
+# Ask the configured embedding endpoint for a vector instead of reading a stored
+# one: the collection is empty on a fresh install (and the ingestion test above
+# cleans up after itself), so a points-based check reported a failure on a
+# correct stack.
+check "Embedding endpoint returns ${EMBEDDING_DIMS}d vectors" \
     "python3 << 'PYEOF'
-from qdrant_client import QdrantClient
-c = QdrantClient(host='${QDRANT_HOST}', port=${QDRANT_PORT},
-                 api_key='${QDRANT_API_KEY}' or None, https=False)
-points, _ = c.scroll('${COLLECTION_NAME}', limit=1, with_vectors=True)
-assert len(points) > 0, 'no points found in collection'
-assert len(points[0].vector['dense']) == ${EMBEDDING_DIMS}, \\
-    f'expected ${EMBEDDING_DIMS} dims, got {len(points[0].vector[\"dense\"])}'
+import json, os, urllib.request
+
+base = (os.environ.get('EMBEDDING_API_BASE') or 'https://openrouter.ai/api/v1').rstrip('/')
+model = os.environ.get('EMBEDDING_MODEL') or 'qwen/qwen3-embedding-8b'
+dims = int(os.environ.get('EMBEDDING_DIMS') or 0)
+# host.docker.internal is how the worker reaches the host; from the host itself
+# the same endpoint is on localhost.
+base = base.replace('host.docker.internal', 'localhost')
+body = json.dumps({'model': model, 'input': 'memory-os smoke test'}).encode()
+req = urllib.request.Request(base + '/embeddings', data=body,
+                             headers={'Content-Type': 'application/json'})
+key = os.environ.get('EMBEDDING_API_KEY') or os.environ.get('OPENROUTER_API_KEY') or ''
+if key:
+    req.add_header('Authorization', 'Bearer ' + key)
+with urllib.request.urlopen(req, timeout=60) as resp:
+    data = json.load(resp)
+got = len(data['data'][0]['embedding'])
+assert got == dims, f'expected {dims} dims from {model}, got {got}'
 PYEOF"
-fi
 
 # ── 5. Cron jobs ─────────────────────────────────────────────────────────────
 echo ""
@@ -164,7 +202,7 @@ check "Scheduled ingestion active (cron or timers)" \
 echo ""
 echo "──────────────────────────────────────────"
 if [ "$QUICK_MODE" = true ]; then
-    echo "Result (quick mode): $PASS passed, $FAIL failed, 2 skipped (ingestion, embedding)"
+    echo "Result (quick mode): $PASS passed, $FAIL failed, 1 skipped (ingestion)"
 else
     echo "Result: $PASS passed, $FAIL failed"
 fi

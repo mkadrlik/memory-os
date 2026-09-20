@@ -42,15 +42,6 @@ from typing import NoReturn
 import uuid
 
 # ── Config from env ──────────────────────────────────────────────────────────
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
-COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "knowledge_base")
-EMBEDDING_DIMS = int(os.environ.get("EMBEDDING_DIMS", "4096"))
-
 REPO_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -65,6 +56,42 @@ def _env_file_value(path: Path, key: str):
         if line.startswith(key + "="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
     return None
+
+
+def _load_profile_env() -> None:
+    """Fill connection/embedding settings from the files setup.sh writes.
+
+    Explicit environment variables always win. Without this, running the script
+    standalone asserted 4096 dims against a 768-dim collection (the installer's
+    value lives in the Compose env file) and reported a failure on a healthy
+    stack.
+    """
+    hermes_home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()
+    keys = (
+        "REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD",
+        "QDRANT_HOST", "QDRANT_PORT", "QDRANT_API_KEY",
+        "COLLECTION_NAME", "EMBEDDING_DIMS",
+    )
+    for name in ("memory-os-compose.env", ".env"):
+        path = hermes_home / name
+        for key in keys:
+            if os.environ.get(key):
+                continue
+            value = _env_file_value(path, key)
+            if value:
+                os.environ[key] = value
+
+
+_load_profile_env()
+
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "knowledge_base")
+EMBEDDING_DIMS = int(os.environ.get("EMBEDDING_DIMS", "4096"))
 
 
 def _resolve_wiki_host_path() -> Path:
@@ -125,9 +152,21 @@ TEST_TEXT = (
 
 
 async def wait_for_job(redis, job_id: str, label: str):
+    """Wait for an ARQ job to finish and return its result.
+
+    Uses the public arq ``Job`` API. The previous implementation called
+    ``ArqRedis.get_job_result``, which does not exist in arq 0.28 (the method
+    there is ``_get_job_result``), so this script died with AttributeError
+    before it verified anything on a stack that was otherwise healthy. In arq
+    0.28 ``Job.result_info()`` is a single non-blocking read (no timeout
+    argument), so the polling loop stays here.
+    """
+    from arq.jobs import Job
+
+    job = Job(job_id, redis)
     deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
-        job_info = await redis.get_job_result(job_id)
+        job_info = await job.result_info()
         if job_info is not None:
             if job_info.success:
                 return job_info.result
@@ -198,10 +237,12 @@ async def main() -> None:
         )
         return pts
 
+    last_job = None
     try:
         # ── 2. First ingestion ───────────────────────────────────────────────
         print("2. Enqueuing process_wiki_file (first run)...")
         job = await redis.enqueue_job("process_wiki_file", CONTAINER_TEST_PATH)
+        last_job = job
         ok(f"Job {job.job_id} enqueued")
         result = await wait_for_job(redis, job.job_id, "first ingestion")
         ok(f"Job completed → {json.dumps(result, default=str)}")
@@ -241,6 +282,7 @@ async def main() -> None:
         print("4. Re-ingesting the same document (dedup path)...")
         before = len(await points_for(CONTAINER_TEST_PATH))
         job2 = await redis.enqueue_job("process_wiki_file", CONTAINER_TEST_PATH)
+        last_job = job2
         result2 = await wait_for_job(redis, job2.job_id, "second ingestion")
         after_points = await points_for(CONTAINER_TEST_PATH)
         ok(f"Second run → {json.dumps(result2, default=str)}")
@@ -252,19 +294,39 @@ async def main() -> None:
         ok(f"no duplicate: {len(after_points)} point(s) for this file ✓")
 
         # ── 5. Invalid path must fail loudly ─────────────────────────────────
+        # The job is *expected* to fail here, so poll the result directly:
+        # wait_for_job() reports a failed job through fail() (SystemExit), which
+        # is the right behaviour everywhere else but made this step impossible —
+        # it aborted the script exactly when the guard worked.
         print("5. Invalid path must be rejected...")
+        from arq.jobs import Job
         job3 = await redis.enqueue_job("process_wiki_file", "/etc/passwd")
-        try:
-            res3 = await wait_for_job(redis, job3.job_id, "invalid path")
-            fail(f"invalid path was accepted → {res3!r}")
-        except SystemExit:
-            raise
-        except Exception:
-            pass
+        last_job = job3
+        info3 = None
+        deadline3 = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline3:
+            info3 = await Job(job3.job_id, redis).result_info()
+            if info3 is not None:
+                break
+            await asyncio.sleep(POLL_INTERVAL)
+        if info3 is None:
+            fail("invalid path: the worker never produced a result")
+        if info3.success:
+            fail(f"invalid path was accepted → {info3.result!r}")
+        ok(f"invalid path rejected → {info3.result!r}")
 
     finally:
         # ── 6. Cleanup ───────────────────────────────────────────────────────
         print("6. Cleaning up...")
+        # A crash while a job is still queued would otherwise leave the worker to
+        # create the point *after* this cleanup runs — an orphan that the next
+        # run then collapses via dedup and reports as a failure on a healthy
+        # stack. Let the last job settle first (best effort).
+        if last_job is not None:
+            try:
+                await last_job.result(timeout=TIMEOUT)
+            except Exception:  # noqa: BLE001 - settling is best effort
+                pass
         try:
             stale = await points_for(CONTAINER_TEST_PATH)
             if stale:
